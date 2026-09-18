@@ -1,114 +1,48 @@
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <ProgressBar
+        android:id="@+id/pageProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:max="100"
+        android:visibility="gone" />
+
+    <WebView
+        android:id="@+id/chatWebView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="20dp">
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/deviceText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp" />
-
-        <TextView
-            android:id="@+id/oemText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp" />
+        android:orientation="horizontal"
+        android:padding="4dp">
 
         <Button
-            android:id="@+id/startPairingAssistantButton"
-            android:layout_width="match_parent"
+            android:id="@+id/adbSetupButton"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:text="1. Start Shizuku-style pairing" />
+            android:layout_weight="1"
+            android:text="ADB" />
 
         <Button
-            android:id="@+id/discoverConnectButton"
-            android:layout_width="match_parent"
+            android:id="@+id/reloadButton"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="2. Discover &amp; connect" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="Advanced fallback"
-            android:textStyle="bold" />
-
-        <EditText
-            android:id="@+id/hostInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="Host, e.g. 172.19.0.1 or 127.0.0.1"
-            android:inputType="textUri"
-            android:singleLine="true" />
-
-        <EditText
-            android:id="@+id/pairingPortInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="Pairing port"
-            android:inputType="number" />
-
-        <EditText
-            android:id="@+id/pairingCodeInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="6-digit pairing code"
-            android:inputType="numberPassword"
-            android:maxLength="6" />
+            android:layout_weight="1"
+            android:text="Reload" />
 
         <Button
-            android:id="@+id/manualPairButton"
-            android:layout_width="match_parent"
+            android:id="@+id/openBrowserButton"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Manual pair" />
-
-        <EditText
-            android:id="@+id/connectionPortInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="Connection port"
-            android:inputType="number" />
-
-        <Button
-            android:id="@+id/manualConnectButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Manual connect" />
-
-        <EditText
-            android:id="@+id/commandInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:hint="Example: input tap 500 500"
-            android:inputType="text" />
-
-        <Button
-            android:id="@+id/executeCommandButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Execute ADB shell command" />
-
-        <TextView
-            android:id="@+id/commandResultText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:textIsSelectable="true" />
-
+            android:layout_weight="1"
+            android:text="Browser" />
     </LinearLayout>
-</ScrollView>
+
+</LinearLayout>
