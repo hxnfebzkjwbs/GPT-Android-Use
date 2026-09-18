@@ -35,20 +35,22 @@ jobs:
           base64 --decode ci/fixed-debug.keystore.b64 > "$HOME/.android/debug.keystore"
           chmod 600 "$HOME/.android/debug.keystore"
 
-      - name: Verify signing certificate fingerprint
-        shell: bash
-        run: |
-          set -euo pipefail
-          EXPECTED="0D:41:FD:1E:54:BF:E4:08:0C:94:25:5F:FA:76:9A:37:1B:4F:40:9B:A9:4A:EC:6A:E7:9C:FC:31:69:AB:20:11"
-          ACTUAL="$(keytool -list -v             -keystore "$HOME/.android/debug.keystore"             -storepass android             -alias androiddebugkey | sed -n 's/^[[:space:]]*SHA256: //p')"
-          echo "Signing SHA-256: $ACTUAL"
-          test "$ACTUAL" = "$EXPECTED"
-
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk GPT-Android-Use-debug.apk
+
+      - name: Verify APK signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="0d41fd1e54bfe4080c94255ffa769a371b4f409ba94aec6ae79cfc3169ab2011"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          ACTUAL="$("$APKSIGNER" verify --print-certs GPT-Android-Use-debug.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          echo "Signing SHA-256: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
