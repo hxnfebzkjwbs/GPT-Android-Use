@@ -23,7 +23,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var pageAdbBridge: WebAdbBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
-    private var bridgeEnabled = false
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -54,46 +53,27 @@ class MainActivity : AppCompatActivity() {
         }
 
         configureWebView()
+        pageAdbBridge.setEnabled(true)
+        binding.bridgeStatusText.text = "Bridge: ON"
 
         if (savedInstanceState == null) {
             pageAdbBridge.checkAdbOnStartup()
         }
 
-        binding.bridgeToggleButton.setOnClickListener {
-            bridgeEnabled = !bridgeEnabled
-            pageAdbBridge.setEnabled(bridgeEnabled)
-
-            if (bridgeEnabled) {
-                binding.bridgeToggleButton.text = "Bridge ON"
-                binding.bridgeStatusText.text = "Bridge: ON · protocol attaches to your next message"
-            } else {
-                binding.bridgeToggleButton.text = "Bridge OFF"
-                binding.bridgeStatusText.text = "Bridge: OFF"
-            }
-        }
-
         binding.adbRunButton.setOnClickListener {
-            if (!bridgeEnabled) {
-                binding.bridgeStatusText.text = "ADB Run: turn Bridge ON first"
-            } else {
-                binding.bridgeStatusText.text = "ADB Run: sending request…"
-                pageAdbBridge.installForCurrentPage()
-                binding.chatWebView.postDelayed({
-                    pageAdbBridge.sendOneTapAdbRequest()
-                }, 250)
-            }
+            binding.bridgeStatusText.text = "ADB Run: sending request…"
+            pageAdbBridge.installForCurrentPage()
+            binding.chatWebView.postDelayed({
+                pageAdbBridge.sendOneTapAdbRequest()
+            }, 250)
         }
 
         binding.bridgeTestButton.setOnClickListener {
-            if (!bridgeEnabled) {
-                binding.bridgeStatusText.text = "Bridge test: turn Bridge ON first"
-            } else {
-                binding.bridgeStatusText.text = "Bridge test: starting…"
-                pageAdbBridge.installForCurrentPage()
-                binding.chatWebView.postDelayed({
-                    pageAdbBridge.runSelfTest()
-                }, 350)
-            }
+            binding.bridgeStatusText.text = "Bridge test: starting…"
+            pageAdbBridge.installForCurrentPage()
+            binding.chatWebView.postDelayed({
+                pageAdbBridge.runSelfTest()
+            }, 350)
         }
 
         binding.adbSetupButton.setOnClickListener {
@@ -102,11 +82,6 @@ class MainActivity : AppCompatActivity() {
 
         binding.reloadButton.setOnClickListener {
             binding.chatWebView.reload()
-        }
-
-        binding.openBrowserButton.setOnClickListener {
-            val url = binding.chatWebView.url ?: CHATGPT_URL
-            openExternalBrowser(Uri.parse(url))
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -179,9 +154,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 pageAdbBridge.onTopLevelUrlChanged(url)
-                if (bridgeEnabled) {
-                    pageAdbBridge.installForCurrentPage()
-                }
+                pageAdbBridge.installForCurrentPage()
                 super.onPageFinished(view, url)
             }
         }

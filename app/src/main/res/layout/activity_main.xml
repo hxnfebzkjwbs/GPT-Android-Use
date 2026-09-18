@@ -25,7 +25,7 @@
         android:paddingEnd="10dp"
         android:paddingTop="4dp"
         android:paddingBottom="4dp"
-        android:text="Bridge: OFF"
+        android:text="Bridge: ON"
         android:textIsSelectable="true"
         android:textSize="12sp" />
 
@@ -41,27 +41,13 @@
         android:textSize="18sp"
         android:textStyle="bold" />
 
-    <LinearLayout
+    <Button
+        android:id="@+id/bridgeTestButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingStart="4dp"
-        android:paddingEnd="4dp">
-
-        <Button
-            android:id="@+id/bridgeToggleButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Bridge OFF" />
-
-        <Button
-            android:id="@+id/bridgeTestButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Test Bridge" />
-    </LinearLayout>
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
+        android:text="Test Bridge" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -84,12 +70,6 @@
             android:layout_weight="1"
             android:text="Reload" />
 
-        <Button
-            android:id="@+id/openBrowserButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Browser" />
     </LinearLayout>
 
     <TextView
