@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.5.0
+## Version 0.5.1
 
-Version 0.5.0 makes the one-tap ADB test unmistakable: it is a full-width Chinese button on its own row, and the app version is displayed on the main screen.
+Version 0.5.1 keeps the full-width one-tap ADB button and adds a global rendered-code fallback so ADB_EXEC can be detected even when ChatGPT changes assistant container attributes.
 
 ### Web ↔ ADB bridge
 
@@ -165,3 +165,8 @@ This button is intentionally fixed to a safe battery-status query; arbitrary dev
 ### 0.5.0 visible one-tap control
 
 The main screen now shows a full-width **一键ADB测试** button on its own row, plus a visible version label. If the button or version label is absent, the installed app is not 0.5.0.
+
+
+### 0.5.1 reply scan fallback
+
+The bridge now scans rendered `pre code`, `pre`, and `code` nodes across the ChatGPT page when stable assistant-role containers are unavailable. It explicitly excludes the prompt composer and user-message containers, and still marks existing blocks as seen before executing new ones.
