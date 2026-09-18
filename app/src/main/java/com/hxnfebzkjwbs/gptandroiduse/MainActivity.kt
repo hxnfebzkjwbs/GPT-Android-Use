@@ -21,7 +21,11 @@ import com.hxnfebzkjwbs.gptandroiduse.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    private lateinit var pageAdbBridge: WebAdbBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var bridgeEnabled = false
+    private var bridgeBootstrapped = false
+    private var pendingBridgeBootstrap = false
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -38,7 +42,32 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         supportActionBar?.hide()
 
+        pageAdbBridge = WebAdbBridge(
+            applicationContext,
+            binding.chatWebView
+        ) { status ->
+            binding.bridgeStatusText.text = status
+        }
+
         configureWebView()
+
+        binding.bridgeToggleButton.setOnClickListener {
+            bridgeEnabled = !bridgeEnabled
+            pageAdbBridge.setEnabled(bridgeEnabled)
+
+            if (bridgeEnabled) {
+                binding.bridgeToggleButton.text = "Bridge ON"
+                binding.bridgeStatusText.text = "Bridge: ON · waiting for ADB_EXEC"
+                if (!bridgeBootstrapped) {
+                    pendingBridgeBootstrap = true
+                    tryBootstrapBridgeConversation(binding.chatWebView.url)
+                }
+            } else {
+                pendingBridgeBootstrap = false
+                binding.bridgeToggleButton.text = "Bridge OFF"
+                binding.bridgeStatusText.text = "Bridge: OFF"
+            }
+        }
 
         binding.adbSetupButton.setOnClickListener {
             startActivity(Intent(this, AdbSetupActivity::class.java))
@@ -92,12 +121,17 @@ class MainActivity : AppCompatActivity() {
             (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         )
 
+        webView.addJavascriptInterface(pageAdbBridge, "GPTAndroidUseNative")
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
                 request: WebResourceRequest
             ): Boolean {
                 val uri = request.url
+                if (request.isForMainFrame) {
+                    pageAdbBridge.onTopLevelUrlChanged(uri.toString())
+                }
                 return when (uri.scheme?.lowercase()) {
                     "http", "https" -> false
                     else -> {
@@ -105,6 +139,24 @@ class MainActivity : AppCompatActivity() {
                         true
                     }
                 }
+            }
+
+            override fun onPageStarted(
+                view: WebView,
+                url: String,
+                favicon: android.graphics.Bitmap?
+            ) {
+                pageAdbBridge.onTopLevelUrlChanged(url)
+                super.onPageStarted(view, url, favicon)
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                pageAdbBridge.onTopLevelUrlChanged(url)
+                if (bridgeEnabled) {
+                    pageAdbBridge.installForCurrentPage()
+                    tryBootstrapBridgeConversation(url)
+                }
+                super.onPageFinished(view, url)
             }
         }
 
@@ -162,6 +214,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun tryBootstrapBridgeConversation(url: String?) {
+        if (!pendingBridgeBootstrap || !isChatGptUrl(url)) return
+        binding.chatWebView.postDelayed({
+            if (bridgeEnabled && pendingBridgeBootstrap) {
+                pageAdbBridge.bootstrapConversation()
+                pendingBridgeBootstrap = false
+                bridgeBootstrapped = true
+            }
+        }, 600)
+    }
+
+    private fun isChatGptUrl(url: String?): Boolean {
+        val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull().orEmpty()
+        return host == "chatgpt.com" || host.endsWith(".chatgpt.com")
+    }
+
     private fun openExternalBrowser(uri: Uri) {
         runCatching {
             startActivity(
@@ -178,6 +246,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        pageAdbBridge.shutdown()
         if (isFinishing) {
             CookieManager.getInstance().flush()
         }
