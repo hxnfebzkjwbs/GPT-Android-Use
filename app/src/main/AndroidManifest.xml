@@ -7,7 +7,12 @@
         android:allowBackup="true"
         android:label="GPT Android Use"
         android:supportsRtl="true"
-        android:theme="@style/Theme.GPTAndroidUse">
+        android:theme="@style/Theme.GPTAndroidUse"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".AdbSetupActivity"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"
