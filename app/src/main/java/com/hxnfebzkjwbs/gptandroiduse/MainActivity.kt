@@ -1,158 +1,182 @@
 package com.hxnfebzkjwbs.gptandroiduse
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
+import android.app.DownloadManager
+import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.view.View
+import android.webkit.CookieManager
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import com.hxnfebzkjwbs.gptandroiduse.databinding.ActivityMainBinding
-import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
-    private lateinit var adb: AndroidAdbBridge
-    private val executor = Executors.newSingleThreadExecutor()
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
-    private val notificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) {
-                launchPairingAssistant()
-            } else {
-                showResult("Notification permission is required for Shizuku-style pairing code input.")
-            }
+    private val fileChooserLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val callback = filePathCallback ?: return@registerForActivityResult
+            filePathCallback = null
+            callback.onReceiveValue(
+                WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+            )
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        adb = AndroidAdbBridge(applicationContext)
+        supportActionBar?.hide()
 
-        binding.statusText.text = "Wireless ADB: not connected"
-        binding.deviceText.text = "Device: " + Build.MANUFACTURER + " " + Build.MODEL +
-            " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
-        binding.hostInput.setText(ShizukuStyleAdbDiscovery.LOOPBACK)
+        configureWebView()
 
-        val advice = OemCompatibility.current()
-        binding.oemText.text = advice.level.toString() + ": " + advice.message
-
-        binding.startPairingAssistantButton.setOnClickListener {
-            requestNotificationThenPair()
+        binding.adbSetupButton.setOnClickListener {
+            startActivity(Intent(this, AdbSetupActivity::class.java))
         }
 
-        binding.discoverConnectButton.setOnClickListener {
-            runTask("Searching for _adb-tls-connect._tcp…", "Wireless ADB: ready") {
-                val port = ShizukuStyleAdbDiscovery.discoverPortBlocking(
-                    applicationContext,
-                    ShizukuStyleAdbDiscovery.TLS_CONNECT,
-                    15_000
-                ).getOrThrow()
-
-                adb.connect(ShizukuStyleAdbDiscovery.LOOPBACK, port).map {
-                    binding.connectionPortInput.post { binding.connectionPortInput.setText(port.toString()) }
-                    "Connected through " + ShizukuStyleAdbDiscovery.LOOPBACK + ":" + port + ". " +
-                        "The IP shown by Android Settings is not needed for the normal local-device flow."
-                }
-            }
+        binding.reloadButton.setOnClickListener {
+            binding.chatWebView.reload()
         }
 
-        binding.manualPairButton.setOnClickListener {
-            val host = binding.hostInput.text.toString().trim()
-            val port = binding.pairingPortInput.text.toString().toIntOrNull()
-            val code = binding.pairingCodeInput.text.toString()
-
-            if (host.isBlank() || port == null) {
-                showResult("Enter a host and pairing port.")
-                return@setOnClickListener
-            }
-
-            runTask("Manual pairing…", "Wireless ADB: paired") {
-                adb.pair(host, port, code).map { "Paired with " + host + ":" + port }
-            }
+        binding.openBrowserButton.setOnClickListener {
+            val url = binding.chatWebView.url ?: CHATGPT_URL
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }
 
-        binding.manualConnectButton.setOnClickListener {
-            val host = binding.hostInput.text.toString().trim()
-            val port = binding.connectionPortInput.text.toString().toIntOrNull()
-
-            if (host.isBlank() || port == null) {
-                showResult("Enter a host and connection port.")
-                return@setOnClickListener
-            }
-
-            runTask("Connecting to " + host + ":" + port + "…", "Wireless ADB: ready") {
-                adb.connect(host, port).map { "Connected to " + host + ":" + port }
-            }
-        }
-
-        binding.executeCommandButton.setOnClickListener {
-            val command = binding.commandInput.text.toString()
-            runTask("Executing…", "Wireless ADB: ready") { adb.execute(command) }
-        }
-    }
-
-    private fun requestNotificationThenPair() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            launchPairingAssistant()
-        }
-    }
-
-    private fun launchPairingAssistant() {
-        ContextCompat.startForegroundService(
-            this,
-            PairingForegroundService.startIntent(this)
-        )
-
-        binding.statusText.text = "Wireless ADB: pairing assistant running"
-        showResult(
-            "In Wireless debugging, tap 'Pair device with pairing code'. " +
-                "Keep that system dialog open. When the pairing service is discovered, " +
-                "enter the 6-digit code from the GPT Android Use notification."
-        )
-
-        if (!DeveloperSettings.openWirelessDebugging(this)) {
-            showResult("Pairing assistant started, but this ROM does not expose the Wireless debugging settings screen.")
-        }
-    }
-
-    private fun runTask(
-        progress: String,
-        successStatus: String,
-        task: () -> Result<String>
-    ) {
-        binding.statusText.text = progress
-        executor.submit {
-            val result = try {
-                task()
-            } catch (t: Throwable) {
-                Result.failure(t)
-            }
-            runOnUiThread {
-                if (result.isSuccess) {
-                    binding.statusText.text = successStatus
-                    showResult(result.getOrNull().orEmpty())
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (binding.chatWebView.canGoBack()) {
+                    binding.chatWebView.goBack()
                 } else {
-                    binding.statusText.text = "Wireless ADB: error"
-                    showResult(result.exceptionOrNull()?.message ?: "Unknown error")
+                    finish()
                 }
+            }
+        })
+
+        if (savedInstanceState == null) {
+            binding.chatWebView.loadUrl(CHATGPT_URL)
+        } else {
+            binding.chatWebView.restoreState(savedInstanceState)
+        }
+    }
+
+    private fun configureWebView() {
+        val webView = binding.chatWebView
+        val cookies = CookieManager.getInstance()
+        cookies.setAcceptCookie(true)
+        cookies.setAcceptThirdPartyCookies(webView, true)
+
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            loadsImagesAutomatically = true
+            javaScriptCanOpenWindowsAutomatically = true
+            setSupportMultipleWindows(false)
+            mediaPlaybackRequiresUserGesture = false
+            useWideViewPort = true
+            loadWithOverviewMode = false
+        }
+
+        WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest
+            ): Boolean {
+                val uri = request.url
+                return when (uri.scheme?.lowercase()) {
+                    "http", "https" -> false
+                    else -> {
+                        runCatching {
+                            startActivity(Intent(Intent.ACTION_VIEW, uri))
+                        }
+                        true
+                    }
+                }
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                binding.pageProgress.progress = newProgress
+                binding.pageProgress.visibility =
+                    if (newProgress in 1..99) View.VISIBLE else View.GONE
+            }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                this@MainActivity.filePathCallback?.onReceiveValue(null)
+                this@MainActivity.filePathCallback = filePathCallback
+
+                val chooserIntent = runCatching {
+                    fileChooserParams?.createIntent()
+                }.getOrNull() ?: Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+
+                return runCatching {
+                    fileChooserLauncher.launch(chooserIntent)
+                    true
+                }.getOrElse {
+                    this@MainActivity.filePathCallback = null
+                    filePathCallback?.onReceiveValue(null)
+                    false
+                }
+            }
+        }
+
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            runCatching {
+                val request = DownloadManager.Request(Uri.parse(url))
+                    .setMimeType(mimeType)
+                    .addRequestHeader("User-Agent", userAgent)
+                    .addRequestHeader("Cookie", cookies.getCookie(url).orEmpty())
+                    .setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                    )
+                    .setDestinationInExternalPublicDir(
+                        Environment.DIRECTORY_DOWNLOADS,
+                        URLUtil.guessFileName(url, contentDisposition, mimeType)
+                    )
+                getSystemService(DownloadManager::class.java).enqueue(request)
+            }.onFailure {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             }
         }
     }
 
-    private fun showResult(text: String) {
-        binding.commandResultText.text = text
+    override fun onSaveInstanceState(outState: Bundle) {
+        binding.chatWebView.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
-        adb.disconnect()
-        executor.shutdownNow()
+        if (isFinishing) {
+            CookieManager.getInstance().flush()
+        }
+        filePathCallback?.onReceiveValue(null)
+        filePathCallback = null
         super.onDestroy()
+    }
+
+    companion object {
+        private const val CHATGPT_URL = "https://chatgpt.com/"
     }
 }

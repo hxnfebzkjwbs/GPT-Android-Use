@@ -1,0 +1,114 @@
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/deviceText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp" />
+
+        <TextView
+            android:id="@+id/oemText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp" />
+
+        <Button
+            android:id="@+id/startPairingAssistantButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="1. Start Shizuku-style pairing" />
+
+        <Button
+            android:id="@+id/discoverConnectButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="2. Discover &amp; connect" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Advanced fallback"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/hostInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Host, e.g. 172.19.0.1 or 127.0.0.1"
+            android:inputType="textUri"
+            android:singleLine="true" />
+
+        <EditText
+            android:id="@+id/pairingPortInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Pairing port"
+            android:inputType="number" />
+
+        <EditText
+            android:id="@+id/pairingCodeInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="6-digit pairing code"
+            android:inputType="numberPassword"
+            android:maxLength="6" />
+
+        <Button
+            android:id="@+id/manualPairButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Manual pair" />
+
+        <EditText
+            android:id="@+id/connectionPortInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Connection port"
+            android:inputType="number" />
+
+        <Button
+            android:id="@+id/manualConnectButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Manual connect" />
+
+        <EditText
+            android:id="@+id/commandInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:hint="Example: input tap 500 500"
+            android:inputType="text" />
+
+        <Button
+            android:id="@+id/executeCommandButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Execute ADB shell command" />
+
+        <TextView
+            android:id="@+id/commandResultText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textIsSelectable="true" />
+
+    </LinearLayout>
+</ScrollView>
