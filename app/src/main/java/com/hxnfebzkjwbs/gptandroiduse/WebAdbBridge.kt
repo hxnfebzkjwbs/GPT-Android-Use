@@ -236,10 +236,6 @@ class WebAdbBridge(
           let enabled = true;
           let timer = null;
           let bypassNextSend = false;
-          let streamingCandidateKey = '';
-          let streamingCandidateSince = 0;
-          let streamingRecheckTimer = null;
-          const STREAMING_STABLE_MS = 2200;
           const seen = new Set();
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
@@ -370,12 +366,43 @@ class WebAdbBridge(
             return rect.width > 0 && rect.height > 0;
           }
 
+          function isStopActionButton(button) {
+            if (!button) return false;
+            const testId = (button.getAttribute('data-testid') || '').toLowerCase();
+            const aria = (button.getAttribute('aria-label') || '').toLowerCase();
+            const title = (button.getAttribute('title') || '').toLowerCase();
+            return testId === 'stop-button' ||
+              testId.includes('stop') ||
+              aria.includes('stop') ||
+              aria.includes('停止') ||
+              title.includes('stop') ||
+              title.includes('停止');
+          }
+
+          function isSendActionButton(button) {
+            if (!button || isStopActionButton(button)) return false;
+            const testId = (button.getAttribute('data-testid') || '').toLowerCase();
+            const aria = (button.getAttribute('aria-label') || '').toLowerCase();
+            const title = (button.getAttribute('title') || '').toLowerCase();
+
+            if (testId === 'send-button' || testId === 'composer-submit-button') return true;
+            if (aria.includes('send') || aria.includes('submit') ||
+                aria.includes('发送') || aria.includes('提交')) return true;
+            if (title.includes('send') || title.includes('submit') ||
+                title.includes('发送') || title.includes('提交')) return true;
+
+            // Current ChatGPT reuses #composer-submit-button for Send and Stop.
+            // Only accept the generic id when the button is not in a Stop state.
+            return button.id === 'composer-submit-button';
+          }
+
           function stopButtons() {
             return Array.from(document.querySelectorAll(
+              '#composer-submit-button,' +
               'button[data-testid="stop-button"],' +
               'button[aria-label*="Stop" i],' +
               'button[aria-label*="停止"]'
-            ));
+            )).filter(isStopActionButton);
           }
 
           function isStreaming() {
@@ -414,23 +441,6 @@ class WebAdbBridge(
             }).filter(item => !!item.text);
           }
 
-          function resetStreamingCandidate() {
-            streamingCandidateKey = '';
-            streamingCandidateSince = 0;
-            if (streamingRecheckTimer) {
-              clearTimeout(streamingRecheckTimer);
-              streamingRecheckTimer = null;
-            }
-          }
-
-          function scheduleStreamingRecheck(delayMs) {
-            if (streamingRecheckTimer) clearTimeout(streamingRecheckTimer);
-            streamingRecheckTimer = setTimeout(() => {
-              streamingRecheckTimer = null;
-              scan(false);
-            }, Math.max(150, delayMs));
-          }
-
           function dispatchBlock(item, force) {
             const id = requestIdFor(item.code, item.text);
             if (!force && seen.has(id)) return false;
@@ -449,66 +459,32 @@ class WebAdbBridge(
             if (!enabled) return;
 
             const matches = matchingBlocks();
-            const streaming = isStreaming();
 
             if (force) {
-              resetStreamingCandidate();
               const latest = matches.length ? matches[matches.length - 1] : null;
               if (!latest) {
                 nativeStatus('SCAN_NO_ADB_EXEC', 'blocks=' + candidateBlocks().length);
+                return;
+              }
+              if (isStreaming()) {
+                nativeStatus(
+                  'SCAN_WAIT_STREAMING',
+                  'visibleStop=' + stopButtons().filter(isVisible).length
+                );
                 return;
               }
               dispatchBlock(latest, true);
               return;
             }
 
-            if (streaming) {
-              const latest = matches.length ? matches[matches.length - 1] : null;
-              const visibleStop = stopButtons().filter(isVisible).length;
-
-              if (!latest || latest.text.split('\n').length < 2) {
-                resetStreamingCandidate();
-                nativeStatus(
-                  'SCAN_WAIT_STREAMING',
-                  'visibleStop=' + visibleStop + ',adbExec=' + matches.length
-                );
-                return;
-              }
-
-              const key = hashText(latest.text);
-              const now = Date.now();
-
-              if (key !== streamingCandidateKey) {
-                streamingCandidateKey = key;
-                streamingCandidateSince = now;
-                nativeStatus(
-                  'ADB_EXEC_STABILIZING',
-                  'visibleStop=' + visibleStop + ',stable=0ms'
-                );
-                scheduleStreamingRecheck(STREAMING_STABLE_MS + 100);
-                return;
-              }
-
-              const stableMs = now - streamingCandidateSince;
-              if (stableMs < STREAMING_STABLE_MS) {
-                nativeStatus(
-                  'ADB_EXEC_STABILIZING',
-                  'visibleStop=' + visibleStop + ',stable=' + stableMs + 'ms'
-                );
-                scheduleStreamingRecheck(STREAMING_STABLE_MS - stableMs + 100);
-                return;
-              }
-
+            if (isStreaming()) {
               nativeStatus(
-                'ADB_EXEC_STABLE_STREAMING',
-                'visibleStop=' + visibleStop + ',stable=' + stableMs + 'ms'
+                'SCAN_WAIT_STREAMING',
+                'visibleStop=' + stopButtons().filter(isVisible).length
               );
-              resetStreamingCandidate();
-              dispatchBlock(latest, false);
               return;
             }
 
-            resetStreamingCandidate();
             matches.forEach(item => dispatchBlock(item, false));
           }
 
@@ -582,38 +558,55 @@ class WebAdbBridge(
           }
 
           function sendButtonFromTarget(target) {
-            return target && target.closest ? target.closest(
-              'button[data-testid="send-button"],' +
+            if (!target || !target.closest) return null;
+            const button = target.closest(
               '#composer-submit-button,' +
+              'button[data-testid="send-button"],' +
               'button[data-testid="composer-submit-button"],' +
-              'button[aria-label="Send prompt"],' +
-              'button[aria-label*="Send" i]:not([aria-label*="Stop" i]),' +
+              'button[aria-label*="Send" i],' +
+              'button[aria-label*="Submit" i],' +
               'button[aria-label*="发送"],' +
               'button[aria-label*="提交"]'
-            ) : null;
+            );
+            return isSendActionButton(button) ? button : null;
+          }
+
+          function findSendButton() {
+            const candidates = Array.from(document.querySelectorAll(
+              '#composer-submit-button,' +
+              'button[data-testid="send-button"],' +
+              'button[data-testid="composer-submit-button"],' +
+              'button[aria-label*="Send" i],' +
+              'button[aria-label*="Submit" i],' +
+              'button[aria-label*="发送"],' +
+              'button[aria-label*="提交"]'
+            ));
+            return candidates.find(button => isVisible(button) && isSendActionButton(button)) || null;
           }
 
           function clickSend() {
-            const button = firstMatch([
-              'button[data-testid="send-button"]',
-              '#composer-submit-button',
-              'button[data-testid="composer-submit-button"]',
-              'button[aria-label="Send prompt"]',
-              'button[aria-label*="Send" i]:not([aria-label*="Stop" i])',
-              'button[aria-label*="发送"]',
-              'button[aria-label*="提交"]'
-            ]);
+            const button = findSendButton();
             if (!button) {
-              nativeStatus('SEND_BUTTON_MISSING', location.pathname);
+              const stop = stopButtons().find(isVisible);
+              nativeStatus(
+                stop ? 'SEND_BLOCKED_STOP_ACTIVE' : 'SEND_BUTTON_MISSING',
+                stop ? (stop.id || stop.getAttribute('data-testid') || 'stop') : location.pathname
+              );
               return false;
             }
             if (button.disabled) {
-              nativeStatus('SEND_BUTTON_DISABLED', button.id || button.getAttribute('data-testid') || '');
+              nativeStatus(
+                'SEND_BUTTON_DISABLED',
+                button.id || button.getAttribute('data-testid') || ''
+              );
               return false;
             }
             bypassNextSend = true;
             button.click();
-            nativeStatus('MESSAGE_SENT', button.id || button.getAttribute('data-testid') || 'button');
+            nativeStatus(
+              'MESSAGE_SENT',
+              (button.id || '') + ':' + (button.getAttribute('data-testid') || '')
+            );
             return true;
           }
 
@@ -682,7 +675,9 @@ class WebAdbBridge(
               ',blocks=' + candidateBlocks().length +
               ',globalCode=' + document.querySelectorAll('pre code, pre, code').length +
               ',adbExec=' + matchingBlocks().length +
-              ',streaming=' + isStreaming()
+              ',streaming=' + isStreaming() +
+              ',sendState=' + (!!findSendButton()) +
+              ',stopState=' + stopButtons().some(isVisible)
             );
           };
 
