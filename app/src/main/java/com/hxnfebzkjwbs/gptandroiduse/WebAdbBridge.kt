@@ -272,6 +272,8 @@ class WebAdbBridge(
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
           const PHASE_EXECUTING = 'EXECUTING';
           const PHASE_RESULT_PENDING = 'RESULT_PENDING';
+          const TX_WAIT_TIMEOUT_MS = 45000;
+          const INTERNAL_SEND_TIMEOUT_MS = 60000;
 
           let enabled = true;
           let bypassNextSend = false;
@@ -526,7 +528,22 @@ class WebAdbBridge(
           }
 
           function beginTransaction(source) {
+            if (activeTransaction) {
+              if (
+                activeTransaction.phase === PHASE_EXECUTING ||
+                activeTransaction.phase === PHASE_RESULT_PENDING
+              ) {
+                nativeStatus(
+                  'TX_BUSY',
+                  activeTransaction.id + ':' + activeTransaction.phase
+                );
+                return false;
+              }
+              finishTransaction('superseded-by-new-user-message');
+            }
+
             transactionCounter += 1;
+            const now = Date.now();
             activeTransaction = {
               id: 'tx-' + transactionCounter,
               source: source || 'user',
@@ -535,13 +552,16 @@ class WebAdbBridge(
               candidateKey: '',
               candidateSince: 0,
               commandIndex: 0,
-              currentRequestId: null
+              currentRequestId: null,
+              startedAt: now,
+              lastProgressAt: now
             };
             nativeStatus(
               'TX_BEGIN',
               activeTransaction.id + ':' + activeTransaction.source
             );
             scheduleTransactionAdvance(250);
+            return true;
           }
 
           function finishTransaction(reason) {
@@ -562,6 +582,12 @@ class WebAdbBridge(
             const tx = activeTransaction;
             if (tx.phase !== PHASE_WAITING_ASSISTANT) return;
 
+            const now = Date.now();
+            if (!force && now - tx.lastProgressAt > TX_WAIT_TIMEOUT_MS) {
+              finishTransaction('assistant-timeout');
+              return;
+            }
+
             const snapshot = assistantSnapshot();
             if (!snapshot) {
               scheduleTransactionAdvance(400);
@@ -573,10 +599,10 @@ class WebAdbBridge(
               return;
             }
 
-            const now = Date.now();
             if (tx.candidateKey !== snapshot.key) {
               tx.candidateKey = snapshot.key;
               tx.candidateSince = now;
+              tx.lastProgressAt = now;
               if (!force) {
                 scheduleTransactionAdvance(450);
                 return;
@@ -614,6 +640,7 @@ class WebAdbBridge(
               tx.id + ':' + tx.commandIndex + ':' + hashText(payload);
             tx.currentRequestId = requestId;
             tx.phase = PHASE_EXECUTING;
+            tx.lastProgressAt = Date.now();
 
             nativeStatus('TX_EXECUTE', requestId);
             try {
@@ -738,7 +765,7 @@ class WebAdbBridge(
               return false;
             }
 
-            if (source) beginTransaction(source);
+            if (source && !beginTransaction(source)) return false;
             bypassNextSend = true;
             button.click();
             nativeStatus(
@@ -767,7 +794,8 @@ class WebAdbBridge(
               text: text,
               kind: kind || 'internal',
               transactionId: transactionId || '',
-              prepared: false
+              prepared: false,
+              queuedAt: Date.now()
             });
             nativeStatus('INTERNAL_QUEUED', id);
             scheduleInternalFlush(50);
@@ -792,6 +820,7 @@ class WebAdbBridge(
               activeTransaction.candidateSince = 0;
               activeTransaction.currentRequestId = null;
               activeTransaction.phase = PHASE_WAITING_ASSISTANT;
+              activeTransaction.lastProgressAt = Date.now();
               nativeStatus('TX_RESULT_SENT', activeTransaction.id);
               scheduleTransactionAdvance(250);
             }
@@ -801,6 +830,22 @@ class WebAdbBridge(
             if (!enabled || internalSendInProgress || !internalQueue.length) return;
 
             const item = internalQueue[0];
+
+            if (Date.now() - item.queuedAt > INTERNAL_SEND_TIMEOUT_MS) {
+              nativeStatus('INTERNAL_SEND_TIMEOUT', item.id);
+              const timedOutIndex = internalQueue.findIndex(candidate => candidate.id === item.id);
+              if (timedOutIndex >= 0) internalQueue.splice(timedOutIndex, 1);
+              if (item.kind === 'oneTap') oneTapPending = false;
+              if (
+                item.kind === 'result' &&
+                activeTransaction &&
+                activeTransaction.id === item.transactionId
+              ) {
+                finishTransaction('result-send-timeout');
+              }
+              if (internalQueue.length) scheduleInternalFlush(100);
+              return;
+            }
 
             if (isStreaming()) {
               nativeStatus(
@@ -898,7 +943,21 @@ class WebAdbBridge(
 
           window.__gptAndroidUseOneTapAdbRun = function() {
             if (!enabled) return;
-            if (oneTapPending || activeTransaction || isStreaming()) {
+
+            if (
+              activeTransaction &&
+              activeTransaction.phase === PHASE_WAITING_ASSISTANT
+            ) {
+              finishTransaction('superseded-by-one-tap');
+            }
+
+            if (
+              oneTapPending ||
+              (activeTransaction &&
+                (activeTransaction.phase === PHASE_EXECUTING ||
+                 activeTransaction.phase === PHASE_RESULT_PENDING)) ||
+              isStreaming()
+            ) {
               nativeStatus(
                 'ADB_RUN_BUSY',
                 oneTapPending ? 'pending' :
@@ -961,7 +1020,10 @@ class WebAdbBridge(
             if (!text.trim()) return;
 
             if (text.includes(PROTOCOL_TAG)) {
-              beginTransaction('user');
+              if (!beginTransaction('user')) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+              }
               return;
             }
 
@@ -976,7 +1038,10 @@ class WebAdbBridge(
                 nativeStatus('USER_SEND_ABORTED_NO_SEND', 'button state changed');
                 return;
               }
-              beginTransaction('user');
+              if (!beginTransaction('user')) {
+                nativeStatus('USER_SEND_ABORTED_BUSY', 'click');
+                return;
+              }
               bypassNextSend = true;
               freshButton.click();
               nativeStatus(
@@ -997,7 +1062,10 @@ class WebAdbBridge(
             if (!text.trim()) return;
 
             if (text.includes(PROTOCOL_TAG)) {
-              beginTransaction('user');
+              if (!beginTransaction('user')) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+              }
               return;
             }
 
