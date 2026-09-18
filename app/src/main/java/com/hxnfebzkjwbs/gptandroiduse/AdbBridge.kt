@@ -398,8 +398,8 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     private fun currentForegroundPackage(): String {
         val windowDump = runShellUnchecked("dumpsys window windows")
         val windowPatterns = listOf(
-            Regex("mCurrentFocus=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+"),
-            Regex("mFocusedApp=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+")
+            Regex("mCurrentFocus=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+"),
+            Regex("mFocusedApp=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+")
         )
 
         windowPatterns.forEach { pattern ->
@@ -412,9 +412,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
         val activityDump = runShellUnchecked("dumpsys activity activities")
         val activityPatterns = listOf(
-            Regex("mResumedActivity:.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+"),
-            Regex("topResumedActivity=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+"),
-            Regex("ResumedActivity:.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+")
+            Regex("mResumedActivity:.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+"),
+            Regex("topResumedActivity=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+"),
+            Regex("ResumedActivity:.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+")
         )
 
         activityPatterns.forEach { pattern ->
