@@ -175,8 +175,7 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
     override fun observeUi(): Result<String> = runCatching {
         lastStage = "ui_observe"
-        runShellUnchecked("uiautomator dump " + UI_DUMP_PATH)
-        val raw = runShellUnchecked("cat " + UI_DUMP_PATH)
+        val raw = runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
         val xml = extractHierarchyXml(raw)
         val summary = summarizeUiXml(xml)
         lastStage = "ui_observe_ok"
@@ -427,7 +426,7 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val ADB_WIFI_ENABLED_KEY = "adb_wifi_enabled"
         private const val PROBE_COMMAND = "settings get global development_settings_enabled"
         private const val AUTO_CONNECT_TIMEOUT_MS = 5_000L
-        private const val UI_DUMP_PATH = "/sdcard/gpt_android_use_ui.xml"
+        private const val UI_DUMP_STDOUT = "/proc/self/fd/1"
         private const val MAX_UI_NODES = 120
         private const val MAX_UI_TEXT_CHARS = 160
         private const val MAX_UI_LINE_CHARS = 420
