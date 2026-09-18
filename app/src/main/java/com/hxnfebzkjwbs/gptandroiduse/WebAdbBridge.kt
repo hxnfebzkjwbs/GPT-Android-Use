@@ -218,7 +218,15 @@ class WebAdbBridge(
 
           let enabled = true;
           let timer = null;
+          let bypassNextSend = false;
           const seen = new Set();
+          const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
+          const BRIDGE_HINT =
+            '\n\n' + PROTOCOL_TAG + '\n' +
+            'If this request requires Android device access, reply with exactly one fenced code block. ' +
+            'The first line inside the block must be ADB_EXEC. Each following line must be one allowed ' +
+            'adb shell command without the "adb shell" prefix. Do not add prose outside the block. ' +
+            'If no device action is needed, answer normally.';
 
           function nativeStatus(stage, detail) {
             try {
@@ -247,13 +255,37 @@ class WebAdbBridge(
             return (h >>> 0).toString(16);
           }
 
+          function uniqueElements(items) {
+            return Array.from(new Set(items.filter(Boolean)));
+          }
+
           function assistantContainers() {
-            return Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+            const out = [];
+            [
+              '[data-message-author-role="assistant"]',
+              'section[data-turn="assistant"]',
+              '[data-turn="assistant"]',
+              '[data-role="assistant"]',
+              '[data-message-author="assistant"]',
+              '.agent-turn'
+            ].forEach(selector => {
+              document.querySelectorAll(selector).forEach(el => out.push(el));
+            });
+            return uniqueElements(out);
           }
 
           function requestIdFor(code, text) {
-            const role = code.closest('[data-message-author-role="assistant"]');
-            const turn = code.closest('[data-testid^="conversation-turn-"]');
+            const role = code.closest(
+              '[data-message-author-role="assistant"],' +
+              'section[data-turn="assistant"],' +
+              '[data-turn="assistant"],' +
+              '[data-role="assistant"],' +
+              '[data-message-author="assistant"],' +
+              '.agent-turn'
+            );
+            const turn = code.closest(
+              '[data-testid^="conversation-turn-"],section[data-turn],article[data-turn]'
+            );
             const turnKey = turn ? (turn.getAttribute('data-testid') || '') :
               'assistant-' + Math.max(0, assistantContainers().indexOf(role));
             const codes = role ? Array.from(role.querySelectorAll('pre')) : [code];
@@ -264,9 +296,25 @@ class WebAdbBridge(
           function candidateBlocks() {
             const out = [];
             assistantContainers().forEach(role => {
-              role.querySelectorAll('pre').forEach(code => out.push(code));
+              const nestedCode = Array.from(role.querySelectorAll('pre code'));
+              const preBlocks = Array.from(role.querySelectorAll('pre'));
+              const looseCode = Array.from(role.querySelectorAll('code'))
+                .filter(code => !code.closest('pre'));
+
+              if (nestedCode.length) {
+                nestedCode.forEach(code => out.push(code));
+              } else if (preBlocks.length) {
+                preBlocks.forEach(code => out.push(code));
+              }
+
+              looseCode.forEach(code => out.push(code));
+
+              const wholeText = (role.innerText || role.textContent || '');
+              if (!nestedCode.length && !preBlocks.length && wholeText.includes(MARKER)) {
+                out.push(role);
+              }
             });
-            return out;
+            return uniqueElements(out);
           }
 
           function isVisible(el) {
@@ -298,15 +346,28 @@ class WebAdbBridge(
             });
           }
 
+          function extractPayload(node) {
+            const raw = (node.innerText || node.textContent || '').replace(/\r/g, '');
+            const lines = raw.split('\n');
+            const markerIndex = lines.findIndex(line => line.trim() === MARKER);
+            if (markerIndex < 0) return '';
+
+            const payload = [MARKER];
+            for (let i = markerIndex + 1; i < lines.length && payload.length <= 9; i++) {
+              const line = lines[i].trim();
+              if (!line && payload.length > 1) break;
+              if (!line) continue;
+              if (/^(copy code|copy)$/i.test(line)) continue;
+              payload.push(line);
+            }
+            return payload.join('\n').trim();
+          }
+
           function matchingBlocks() {
             return candidateBlocks().map(code => {
-              const text = (code.innerText || code.textContent || '').replace(/\r/g, '').trim();
+              const text = extractPayload(code);
               return { code, text };
-            }).filter(item => {
-              if (!item.text) return false;
-              const firstLine = item.text.split('\n', 1)[0].trim();
-              return firstLine === MARKER;
-            });
+            }).filter(item => !!item.text);
           }
 
           function dispatchBlock(item, force) {
@@ -394,6 +455,38 @@ class WebAdbBridge(
             }
           }
 
+          function composerText(editor) {
+            if (!editor) return '';
+            if (editor.tagName === 'TEXTAREA') return editor.value || '';
+            return editor.innerText || editor.textContent || '';
+          }
+
+          function attachProtocolToComposer() {
+            const editor = findComposer();
+            if (!editor) {
+              nativeStatus('COMPOSER_MISSING', 'while attaching protocol');
+              return false;
+            }
+            const current = composerText(editor).trimEnd();
+            if (!current) return false;
+            if (current.includes(PROTOCOL_TAG)) return true;
+            const ok = setComposerText(editor, current + BRIDGE_HINT);
+            nativeStatus(ok ? 'PROTOCOL_ATTACHED' : 'PROTOCOL_ATTACH_FAILED', editor.id || editor.tagName);
+            return ok;
+          }
+
+          function sendButtonFromTarget(target) {
+            return target && target.closest ? target.closest(
+              'button[data-testid="send-button"],' +
+              '#composer-submit-button,' +
+              'button[data-testid="composer-submit-button"],' +
+              'button[aria-label="Send prompt"],' +
+              'button[aria-label*="Send" i]:not([aria-label*="Stop" i]),' +
+              'button[aria-label*="发送"],' +
+              'button[aria-label*="提交"]'
+            ) : null;
+          }
+
           function clickSend() {
             const button = firstMatch([
               'button[data-testid="send-button"]',
@@ -412,6 +505,7 @@ class WebAdbBridge(
               nativeStatus('SEND_BUTTON_DISABLED', button.id || button.getAttribute('data-testid') || '');
               return false;
             }
+            bypassNextSend = true;
             button.click();
             nativeStatus('MESSAGE_SENT', button.id || button.getAttribute('data-testid') || 'button');
             return true;
@@ -450,17 +544,7 @@ class WebAdbBridge(
           };
 
           window.__gptAndroidUseBridgeBootstrap = function() {
-            nativeStatus('BOOTSTRAP_START', location.pathname);
-            const message =
-              'Native ADB bridge is enabled for this Android device. ' +
-              'When you need to operate the device, reply with exactly one fenced code block. ' +
-              'The first line inside the block must be ADB_EXEC. ' +
-              'Each following line must be one allowed adb shell command without the "adb shell" prefix. ' +
-              'Examples of allowed command families: input tap/swipe/text, am start/force-stop, ' +
-              'pm list packages, pm path, dumpsys, settings get, uiautomator dump, screencap. ' +
-              'Execution results will return automatically as ADB_RESULT messages. ' +
-              'Do not emit ADB_EXEC blocks merely as examples.';
-            submitMessage(message, 8);
+            nativeStatus('INLINE_PROTOCOL_READY', 'protocol attaches to the next user message');
           };
 
           window.__gptAndroidUseSelfCheck = function() {
@@ -477,6 +561,8 @@ class WebAdbBridge(
               'editor=' + (!!editor) +
               ',send=' + (!!send) +
               ',assistant=' + assistantContainers().length +
+              ',sections=' + document.querySelectorAll('section[data-turn="assistant"]').length +
+              ',roleNodes=' + document.querySelectorAll('[data-message-author-role="assistant"]').length +
               ',blocks=' + candidateBlocks().length +
               ',adbExec=' + matchingBlocks().length +
               ',streaming=' + isStreaming()
@@ -487,6 +573,48 @@ class WebAdbBridge(
             nativeStatus('FORCE_SCAN_START', 'path=' + location.pathname);
             scan(true);
           };
+
+          document.addEventListener('click', function(event) {
+            if (!enabled) return;
+            const button = sendButtonFromTarget(event.target);
+            if (!button) return;
+
+            if (bypassNextSend) {
+              bypassNextSend = false;
+              return;
+            }
+
+            const editor = findComposer();
+            const text = composerText(editor);
+            if (!text.trim() || text.includes(PROTOCOL_TAG)) return;
+
+            event.preventDefault();
+            event.stopImmediatePropagation();
+
+            if (!attachProtocolToComposer()) return;
+
+            setTimeout(() => {
+              bypassNextSend = true;
+              button.click();
+              nativeStatus('USER_MESSAGE_SENT_WITH_PROTOCOL', button.id || button.getAttribute('data-testid') || 'button');
+            }, 100);
+          }, true);
+
+          document.addEventListener('keydown', function(event) {
+            if (!enabled || event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+            const editor = findComposer();
+            if (!editor) return;
+            if (!(event.target === editor || editor.contains(event.target))) return;
+
+            const text = composerText(editor);
+            if (!text.trim() || text.includes(PROTOCOL_TAG)) return;
+
+            event.preventDefault();
+            event.stopImmediatePropagation();
+
+            if (!attachProtocolToComposer()) return;
+            setTimeout(() => clickSend(), 100);
+          }, true);
 
           window.__gptAndroidUseSetBridgeEnabled = function(value) {
             enabled = !!value;
