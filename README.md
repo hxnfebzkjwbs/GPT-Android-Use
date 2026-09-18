@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.5.3
+## Version 0.5.4
 
-Version 0.5.3 includes the stable-streaming ADB execution fix from 0.5.2 and makes the visible version label reflect the actually installed APK version.
+Version 0.5.4 fixes the ChatGPT composer state machine by distinguishing Send and Stop states on the shared #composer-submit-button instead of treating that element id as always-send.
 
 ### Web ↔ ADB bridge
 
@@ -187,3 +187,13 @@ Diagnostic stages:
 ### 0.5.3 installed-version label
 
 The bottom version label is now populated from Android package metadata at runtime instead of being hard-coded, so it always matches the installed APK.
+
+
+### 0.5.4 Send/Stop state-machine fix
+
+Current ChatGPT reuses `#composer-submit-button` for both states:
+
+- send state: `data-testid="send-button"`
+- stop state: `data-testid="stop-button"`
+
+The bridge now classifies the button before touching it. Stop-state buttons are never used by programmatic send, never treated as Send by the click interceptor, and ADB execution again waits for the true Stop state to clear. The previous "execute after stable text even while Stop remains visible" workaround has been removed.
