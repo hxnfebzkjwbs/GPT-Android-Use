@@ -62,6 +62,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        binding.adbRunButton.setOnClickListener {
+            if (!bridgeEnabled) {
+                binding.bridgeStatusText.text = "ADB Run: turn Bridge ON first"
+            } else {
+                binding.bridgeStatusText.text = "ADB Run: sending request…"
+                pageAdbBridge.installForCurrentPage()
+                binding.chatWebView.postDelayed({
+                    pageAdbBridge.sendOneTapAdbRequest()
+                }, 250)
+            }
+        }
+
         binding.bridgeTestButton.setOnClickListener {
             if (!bridgeEnabled) {
                 binding.bridgeStatusText.text = "Bridge test: turn Bridge ON first"

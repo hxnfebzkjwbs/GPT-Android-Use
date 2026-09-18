@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.4.8
+## Version 0.4.9
 
-Version 0.4.8 removes the standalone bridge bootstrap message, attaches the ADB protocol to each real user request, and broadens assistant reply detection across current ChatGPT DOM variants.
+Version 0.4.9 adds a one-tap ADB Run button so the end-to-end bridge can be exercised without typing a test request.
 
 ### Web ↔ ADB bridge
 
@@ -146,3 +146,17 @@ Assistant detection now accepts multiple current ChatGPT structures:
 - `.agent-turn`
 
 For command extraction it prefers the nested `pre code` element, falls back to `pre`, then to the assistant body when necessary. It searches for the `ADB_EXEC` marker even when a rendered language/copy label appears before the command text.
+
+
+### 0.4.9 one-tap ADB Run
+
+With Bridge ON, tap **ADB Run**. The app automatically sends a fixed request asking ChatGPT to return exactly:
+
+```text
+ADB_EXEC
+dumpsys battery
+```
+
+The normal reply detector then executes the command and feeds the result back as `ADB_RESULT`.
+
+This button is intentionally fixed to a safe battery-status query; arbitrary device actions still come from normal chat requests.

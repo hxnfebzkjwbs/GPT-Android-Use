@@ -57,6 +57,23 @@ class WebAdbBridge(
         }
     }
 
+    fun sendOneTapAdbRequest() {
+        if (!enabled) {
+            postStatus("ADB Run: turn Bridge ON first")
+            return
+        }
+        if (!trustedTopPage) {
+            postStatus("ADB Run: current page is not chatgpt.com")
+            return
+        }
+        webView.post {
+            webView.evaluateJavascript(
+                "window.__gptAndroidUseOneTapAdbRun && window.__gptAndroidUseOneTapAdbRun();",
+                null
+            )
+        }
+    }
+
     fun installForCurrentPage() {
         if (!enabled || !trustedTopPage) return
         webView.evaluateJavascript(installScript(), null)
@@ -545,6 +562,16 @@ class WebAdbBridge(
 
           window.__gptAndroidUseBridgeBootstrap = function() {
             nativeStatus('INLINE_PROTOCOL_READY', 'protocol attaches to the next user message');
+          };
+
+          window.__gptAndroidUseOneTapAdbRun = function() {
+            if (!enabled) return;
+            const prompt =
+              '请通过 Android ADB 读取当前手机电池状态。不要解释，不要回复 understood。' +
+              '请严格只返回一个代码块，第一行必须是 ADB_EXEC，下一行使用 dumpsys battery。' +
+              BRIDGE_HINT;
+            nativeStatus('ADB_RUN_BUTTON', 'sending battery-status request');
+            submitMessage(prompt, 8);
           };
 
           window.__gptAndroidUseSelfCheck = function() {
