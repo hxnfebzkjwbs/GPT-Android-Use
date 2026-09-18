@@ -19,23 +19,27 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         AdbConnectionManager.getInstance(context)
 
     override fun pair(host: String, port: Int, pairingCode: String): Result<Unit> = runCatching {
-        require(host.isNotBlank()) { "Wireless debugging IP is required" }
+        require(host.isNotBlank()) { "Wireless debugging host is required" }
         require(pairingCode.matches(Regex("\\d{6}"))) { "Pairing code must be 6 digits" }
         require(port in 1..65535) { "Invalid pairing port" }
         check(manager().pair(host.trim(), port, pairingCode)) { "ADB pairing failed" }
     }
 
     override fun connect(host: String, port: Int): Result<Unit> = runCatching {
-        require(host.isNotBlank()) { "Wireless debugging IP is required" }
+        require(host.isNotBlank()) { "Wireless debugging host is required" }
         require(port in 1..65535) { "Invalid connection port" }
-        check(manager().connect(host.trim(), port)) {
-            "ADB connection failed or is already connected"
+
+        val manager = manager()
+        if (!manager.isConnected) {
+            check(manager.connect(host.trim(), port)) { "ADB connection failed" }
         }
     }
 
     override fun autoConnect(): Result<Unit> = runCatching {
+        val manager = manager()
+        if (manager.isConnected) return@runCatching
         try {
-            check(manager().autoConnect(context, 10_000)) {
+            check(manager.autoConnect(context, 10_000)) {
                 "No paired Wireless ADB endpoint was found"
             }
         } catch (e: AdbPairingRequiredException) {
