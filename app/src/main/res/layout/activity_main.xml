@@ -24,18 +24,29 @@
         android:paddingStart="10dp"
         android:paddingEnd="10dp"
         android:paddingTop="4dp"
-        android:paddingBottom="2dp"
+        android:paddingBottom="4dp"
         android:text="Bridge: OFF"
         android:textIsSelectable="true"
         android:textSize="12sp" />
+
+    <Button
+        android:id="@+id/adbRunButton"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginTop="2dp"
+        android:layout_marginBottom="4dp"
+        android:text="一键ADB测试"
+        android:textSize="18sp"
+        android:textStyle="bold" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingStart="4dp"
-        android:paddingEnd="4dp"
-        android:paddingTop="2dp">
+        android:paddingEnd="4dp">
 
         <Button
             android:id="@+id/bridgeToggleButton"
@@ -43,13 +54,6 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="Bridge OFF" />
-
-        <Button
-            android:id="@+id/adbRunButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="ADB Run" />
 
         <Button
             android:id="@+id/bridgeTestButton"
@@ -64,8 +68,7 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingStart="4dp"
-        android:paddingEnd="4dp"
-        android:paddingBottom="4dp">
+        android:paddingEnd="4dp">
 
         <Button
             android:id="@+id/adbSetupButton"
@@ -88,5 +91,14 @@
             android:layout_weight="1"
             android:text="Browser" />
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/versionText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:paddingBottom="4dp"
+        android:text="v0.5.0"
+        android:textSize="11sp" />
 
 </LinearLayout>
