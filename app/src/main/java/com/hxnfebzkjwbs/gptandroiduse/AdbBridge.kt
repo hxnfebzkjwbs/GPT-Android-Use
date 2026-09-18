@@ -8,6 +8,7 @@ import java.io.InputStreamReader
 
 interface AdbBridge {
     fun pair(host: String, port: Int, pairingCode: String): Result<Unit>
+    fun connect(host: String, port: Int): Result<Unit>
     fun autoConnect(): Result<Unit>
     fun execute(command: String): Result<String>
     fun disconnect()
@@ -18,9 +19,18 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         AdbConnectionManager.getInstance(context)
 
     override fun pair(host: String, port: Int, pairingCode: String): Result<Unit> = runCatching {
+        require(host.isNotBlank()) { "Wireless debugging IP is required" }
         require(pairingCode.matches(Regex("\\d{6}"))) { "Pairing code must be 6 digits" }
         require(port in 1..65535) { "Invalid pairing port" }
-        check(manager().pair(host, port, pairingCode)) { "ADB pairing failed" }
+        check(manager().pair(host.trim(), port, pairingCode)) { "ADB pairing failed" }
+    }
+
+    override fun connect(host: String, port: Int): Result<Unit> = runCatching {
+        require(host.isNotBlank()) { "Wireless debugging IP is required" }
+        require(port in 1..65535) { "Invalid connection port" }
+        check(manager().connect(host.trim(), port)) {
+            "ADB connection failed or is already connected"
+        }
     }
 
     override fun autoConnect(): Result<Unit> = runCatching {
