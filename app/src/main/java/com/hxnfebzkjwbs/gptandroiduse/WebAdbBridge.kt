@@ -617,6 +617,16 @@ class WebAdbBridge(
               return;
             }
 
+            // Never parse or execute a partial assistant reply. The Stop state
+            // is the transaction boundary: wait until streaming has fully ended.
+            if (isStreaming()) {
+              tx.candidateKey = snapshot.key;
+              tx.candidateSince = now;
+              tx.lastProgressAt = now;
+              scheduleTransactionAdvance(300);
+              return;
+            }
+
             if (tx.candidateKey !== snapshot.key) {
               tx.candidateKey = snapshot.key;
               tx.candidateSince = now;
@@ -633,28 +643,12 @@ class WebAdbBridge(
               return;
             }
 
-            const streaming = isStreaming();
             const payloads = commandPayloads(snapshot.surface);
-
-            // A streaming reply is never "final" merely because it has been
-            // stable for a moment. If no ADB_EXEC is visible yet, keep waiting.
             if (!payloads.length) {
-              if (streaming) {
-                scheduleTransactionAdvance(300);
-                return;
-              }
-
               tx.baselineKey = snapshot.key;
               tx.candidateKey = '';
               tx.candidateSince = 0;
               finishTransaction('assistant-final');
-              return;
-            }
-
-            // If the ADB block is already visible while the assistant is still
-            // streaming, allow it to execute after a short stability window.
-            if (!force && streaming && stableFor < 900) {
-              scheduleTransactionAdvance(250);
               return;
             }
 
