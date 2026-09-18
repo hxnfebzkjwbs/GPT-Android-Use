@@ -199,8 +199,8 @@ class WebAdbBridge(
 
         watchdogFuture = watchdogExecutor.scheduleWithFixedDelay(
             { watchdogTick() },
-            5,
-            20,
+            WATCHDOG_INITIAL_DELAY_SECONDS,
+            WATCHDOG_PERIOD_SECONDS,
             TimeUnit.SECONDS
         )
     }
@@ -216,11 +216,16 @@ class WebAdbBridge(
 
         try {
             if (adb.isConnected()) {
-                if (watchdogFailures > 0) {
-                    postStatus("Bridge: ADB online")
+                val heartbeat = adb.execute("settings get global adb_wifi_enabled")
+                if (heartbeat.isSuccess) {
+                    if (watchdogFailures > 0) {
+                        postStatus("Bridge: ADB online")
+                    }
+                    watchdogFailures = 0
+                    return
                 }
-                watchdogFailures = 0
-                return
+                postStatus("Bridge: stale ADB session · reconnecting…")
+                adb.disconnect()
             }
 
             if (AdbSelfHeal.isEnabled(appContext) &&
@@ -230,7 +235,7 @@ class WebAdbBridge(
             ) {
                 postStatus("Bridge: re-enabling Wireless ADB…")
                 adb.enableWirelessDebugging().getOrThrow()
-                Thread.sleep(1_000)
+                Thread.sleep(WIRELESS_ADB_RESTART_DELAY_MS)
             }
 
             val result = adb.autoConnect()
@@ -952,5 +957,8 @@ class WebAdbBridge(
         private const val MAX_BLOCK_CHARS = 6_000
         private const val MAX_SINGLE_RESULT_CHARS = 6_000
         private const val MAX_RESULT_CHARS = 12_000
+        private const val WATCHDOG_INITIAL_DELAY_SECONDS = 5L
+        private const val WATCHDOG_PERIOD_SECONDS = 20L
+        private const val WIRELESS_ADB_RESTART_DELAY_MS = 1_500L
     }
 }
