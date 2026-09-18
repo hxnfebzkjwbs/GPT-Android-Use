@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.4.6
+## Version 0.4.7
 
-Version 0.4.6 fixes the WebView bridge initialization path and adds diagnostics for the ChatGPT page and Wireless ADB.
+Version 0.4.7 fixes reply detection when ChatGPT leaves hidden stop controls mounted in the DOM and lets Test Bridge force-scan the latest ADB_EXEC block.
 
 ### Web ↔ ADB bridge
 
@@ -33,7 +33,7 @@ input tap 500 1200
 input keyevent KEYCODE_BACK
 ```
 
-The bridge accepts at most 8 commands per block. If initialization fails, turning Bridge off/on retries it instead of permanently marking the session initialized.
+The bridge accepts at most 8 commands per block. Only visible stop controls count as active streaming. Test Bridge force-scans the latest ADB_EXEC block even if it is already visible on the page.
 
 Currently allowed command families:
 
@@ -118,3 +118,13 @@ Tap **Test Bridge** while Bridge is ON. The status line reports stages such as:
 - `Bridge test: ADB OK` — the native Wireless ADB connection successfully ran a read-only settings query
 
 **Test Bridge** also retries the bridge protocol message.
+
+
+### 0.4.7 reply execution fix
+
+If an `ADB_EXEC` reply is already visible but was not executed, tap **Test Bridge**. The app now:
+
+- ignores hidden/inactive Stop buttons when deciding whether generation is still running
+- reports `ADB_EXEC_FORCE_FOUND` when the latest command block is located
+- reports `Bridge: Native received ADB_EXEC` as soon as the JavaScript call reaches Android
+- force-executes the latest matching block once for diagnosis
