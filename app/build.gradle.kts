@@ -11,8 +11,20 @@ android {
         applicationId = "com.hxnfebzkjwbs.gptandroiduse"
         minSdk = 30
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.4.1"
+        versionCode = 6
+        versionName = "0.4.2"
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("ci/fixed-debug.keystore")
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
 
     buildFeatures { viewBinding = true }

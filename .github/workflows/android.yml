@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feature/android-shell-bridge
   pull_request:
   workflow_dispatch:
 
@@ -13,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,11 +27,29 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Restore fixed development signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode ci/fixed-debug.keystore.b64 > ci/fixed-debug.keystore
+          chmod 600 ci/fixed-debug.keystore
+
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk GPT-Android-Use-debug.apk
+
+      - name: Verify APK signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="0d41fd1e54bfe4080c94255ffa769a371b4f409ba94aec6ae79cfc3169ab2011"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          CERTS="$("$APKSIGNER" verify --print-certs GPT-Android-Use-debug.apk 2>&1)"
+          echo "$CERTS"
+          echo "$CERTS" | grep -F "$EXPECTED"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

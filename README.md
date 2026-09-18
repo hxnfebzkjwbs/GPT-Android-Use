@@ -2,42 +2,39 @@
 
 Android app that combines an embedded ChatGPT web experience with a local Wireless ADB bridge.
 
-## Version 0.4.1
+## Version 0.4.2
 
-The main screen embeds:
+Version 0.4.2 introduces a fixed development signing certificate for GitHub Actions builds.
+
+Certificate SHA-256:
 
 ```text
-https://chatgpt.com/
+0D:41:FD:1E:54:BF:E4:08:0C:94:25:5F:FA:76:9A:37:1B:4F:40:9B:A9:4A:EC:6A:E7:9C:FC:31:69:AB:20:11
 ```
 
-No OpenAI API is used and no API key is stored by the app.
+From 0.4.2 onward, GitHub Actions restores the same development keystore before every build and verifies the APK signer before uploading the artifact. Future APKs can therefore update an installed 0.4.2+ build with:
 
-### Google account sign-in
+```bash
+adb install -r GPT-Android-Use-debug.apk
+```
 
-Google authentication is intentionally not completed inside the WebView.
+### One-time migration
 
-When the embedded ChatGPT page navigates to a Google OAuth URL, the app:
+Versions 0.4.1 and earlier were signed by temporary GitHub-hosted runner debug keys. Android will not allow 0.4.2 to replace those builds in place.
 
-1. Detects Google authentication URLs such as `accounts.google.com`, `google-oauth2`, or a Google provider parameter.
-2. Opens the authentication URL in Google Chrome when available.
-3. Falls back to Brave.
-4. Falls back to the Android default browser if neither is available.
-5. Reloads the embedded ChatGPT page when the user returns to the app.
+Uninstall the old build once, install 0.4.2, and later fixed-signed versions can update it without uninstalling.
 
-This follows OpenAI's Android guidance that supported browser login uses Chrome or Brave.
+### Development-key warning
 
-Android WebView and external browsers maintain separate cookie stores, so a website session created entirely in Chrome may not always transfer into the embedded WebView automatically. The app therefore never asks the user to enter a Google password into its WebView; the **Browser** button remains available when the external authenticated session cannot be reflected in the embedded page.
+The fixed key is intentionally stored in this public repository because the current GitHub integration cannot create Actions Secrets. This makes builds reproducible for personal/test sideloading, but anyone can obtain the development key.
 
-### Embedded ChatGPT
+Do not use this key for Play Store or security-sensitive production distribution. A production release should use a private release key stored in GitHub Actions Secrets.
 
-- JavaScript and DOM storage enabled
-- Persistent WebView cookies
-- ChatGPT file picker support
-- Authenticated downloads through Android DownloadManager
-- Web navigation/back support
-- Reload button
-- Browser fallback button
-- Dedicated ADB setup screen
+## Embedded ChatGPT
+
+The main screen embeds `https://chatgpt.com/`. No OpenAI API is used.
+
+Google OAuth opens in an external browser rather than inside the WebView. The app prefers Chrome, then Brave, then the Android default browser.
 
 ## Wireless ADB
 
