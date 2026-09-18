@@ -74,7 +74,8 @@ class WebAdbBridge(
 
         webView.post {
             webView.evaluateJavascript(
-                "window.__gptAndroidUseSelfCheck && window.__gptAndroidUseSelfCheck();",
+                "window.__gptAndroidUseSelfCheck && window.__gptAndroidUseSelfCheck();" +
+                    "window.__gptAndroidUseScanNow && window.__gptAndroidUseScanNow();",
                 null
             )
         }
@@ -111,6 +112,7 @@ class WebAdbBridge(
             return
         }
         if (!inFlight.add(requestId)) return
+        postStatus("Bridge: Native received ADB_EXEC")
 
         executor.execute {
             try {
@@ -267,12 +269,25 @@ class WebAdbBridge(
             return out;
           }
 
-          function isStreaming() {
-            return !!document.querySelector(
+          function isVisible(el) {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+            if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+
+          function stopButtons() {
+            return Array.from(document.querySelectorAll(
               'button[data-testid="stop-button"],' +
-              'button[aria-label*="Stop"],' +
+              'button[aria-label*="Stop" i],' +
               'button[aria-label*="停止"]'
-            );
+            ));
+          }
+
+          function isStreaming() {
+            return stopButtons().some(button => isVisible(button) && !button.disabled);
           }
 
           function markExisting() {
@@ -283,28 +298,56 @@ class WebAdbBridge(
             });
           }
 
-          function scan() {
-            if (!enabled || isStreaming()) return;
-            candidateBlocks().forEach(code => {
+          function matchingBlocks() {
+            return candidateBlocks().map(code => {
               const text = (code.innerText || code.textContent || '').replace(/\r/g, '').trim();
-              if (!text) return;
-              const firstLine = text.split('\n', 1)[0].trim();
-              if (firstLine !== MARKER) return;
-              const id = requestIdFor(code, text);
-              if (seen.has(id)) return;
-              seen.add(id);
-              nativeStatus('ADB_EXEC_FOUND', id);
-              try {
-                window.GPTAndroidUseNative.executeBlock(TOKEN, id, text);
-              } catch (e) {
-                nativeStatus('NATIVE_CALL_ERROR', String(e));
-              }
+              return { code, text };
+            }).filter(item => {
+              if (!item.text) return false;
+              const firstLine = item.text.split('\n', 1)[0].trim();
+              return firstLine === MARKER;
             });
+          }
+
+          function dispatchBlock(item, force) {
+            const id = requestIdFor(item.code, item.text);
+            if (!force && seen.has(id)) return false;
+            seen.add(id);
+            nativeStatus(force ? 'ADB_EXEC_FORCE_FOUND' : 'ADB_EXEC_FOUND', id);
+            try {
+              window.GPTAndroidUseNative.executeBlock(TOKEN, id, item.text);
+              return true;
+            } catch (e) {
+              nativeStatus('NATIVE_CALL_ERROR', String(e));
+              return false;
+            }
+          }
+
+          function scan(force) {
+            if (!enabled) return;
+            const streaming = isStreaming();
+            if (streaming && !force) {
+              nativeStatus('SCAN_WAIT_STREAMING', 'visibleStop=' + stopButtons().filter(isVisible).length);
+              return;
+            }
+
+            const matches = matchingBlocks();
+            if (force) {
+              const latest = matches.length ? matches[matches.length - 1] : null;
+              if (!latest) {
+                nativeStatus('SCAN_NO_ADB_EXEC', 'blocks=' + candidateBlocks().length);
+                return;
+              }
+              dispatchBlock(latest, true);
+              return;
+            }
+
+            matches.forEach(item => dispatchBlock(item, false));
           }
 
           function scheduleScan() {
             if (timer) clearTimeout(timer);
-            timer = setTimeout(scan, 1800);
+            timer = setTimeout(() => scan(false), 1200);
           }
 
           function findComposer() {
@@ -434,8 +477,15 @@ class WebAdbBridge(
               'editor=' + (!!editor) +
               ',send=' + (!!send) +
               ',assistant=' + assistantContainers().length +
-              ',blocks=' + candidateBlocks().length
+              ',blocks=' + candidateBlocks().length +
+              ',adbExec=' + matchingBlocks().length +
+              ',streaming=' + isStreaming()
             );
+          };
+
+          window.__gptAndroidUseScanNow = function() {
+            nativeStatus('FORCE_SCAN_START', 'path=' + location.pathname);
+            scan(true);
           };
 
           window.__gptAndroidUseSetBridgeEnabled = function(value) {
