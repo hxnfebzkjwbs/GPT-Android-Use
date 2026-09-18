@@ -25,6 +25,7 @@ class WebAdbBridge(
     private val sessionToken = ByteArray(24).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it) }
     private val inFlight = Collections.synchronizedSet(mutableSetOf<String>())
+    private val completedRequestIds = Collections.synchronizedSet(mutableSetOf<String>())
 
     @Volatile
     private var enabled = false
@@ -134,6 +135,10 @@ class WebAdbBridge(
             postResult("invalid", false, "Bridge blocked: invalid request id")
             return
         }
+        if (completedRequestIds.contains(requestId)) {
+            postStatus("Bridge: duplicate request ignored")
+            return
+        }
         if (!inFlight.add(requestId)) return
         postStatus("Bridge: Native received ADB_EXEC")
 
@@ -189,6 +194,7 @@ class WebAdbBridge(
                 postResult(requestId, false, t.message ?: t.javaClass.simpleName)
             } finally {
                 inFlight.remove(requestId)
+                completedRequestIds.add(requestId)
             }
         }
     }
@@ -312,16 +318,6 @@ class WebAdbBridge(
             return;
           }
 
-          let enabled = true;
-          let timer = null;
-          let bypassNextSend = false;
-          let internalSendTimer = null;
-          let internalSendInProgress = false;
-          let oneTapPending = false;
-          let oneTapCounter = 0;
-          const internalQueue = [];
-          const sentInternalIds = new Set();
-          const seen = new Set();
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
             '\n\n' + PROTOCOL_TAG + '\n' +
@@ -329,6 +325,23 @@ class WebAdbBridge(
             'The first line inside the block must be ADB_EXEC. Each following line must be one allowed ' +
             'adb shell command without the "adb shell" prefix. Do not add prose outside the block. ' +
             'If no device action is needed, answer normally.';
+
+          const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
+          const PHASE_EXECUTING = 'EXECUTING';
+          const PHASE_RESULT_PENDING = 'RESULT_PENDING';
+
+          let enabled = true;
+          let bypassNextSend = false;
+          let internalSendTimer = null;
+          let internalSendInProgress = false;
+          let transactionTimer = null;
+          let oneTapPending = false;
+          let oneTapCounter = 0;
+          let transactionCounter = 0;
+          let activeTransaction = null;
+
+          const internalQueue = [];
+          const sentInternalIds = new Set();
 
           function nativeStatus(stage, detail) {
             try {
@@ -350,8 +363,9 @@ class WebAdbBridge(
 
           function hashText(text) {
             let h = 2166136261;
-            for (let i = 0; i < text.length; i++) {
-              h ^= text.charCodeAt(i);
+            const value = String(text || '');
+            for (let i = 0; i < value.length; i++) {
+              h ^= value.charCodeAt(i);
               h = Math.imul(h, 16777619);
             }
             return (h >>> 0).toString(16);
@@ -361,30 +375,14 @@ class WebAdbBridge(
             return Array.from(new Set(items.filter(Boolean)));
           }
 
-          function assistantContainers() {
-            const out = [];
-            [
-              '[data-message-author-role="assistant"]',
-              'section[data-turn="assistant"]',
-              '[data-turn="assistant"]',
-              '[data-role="assistant"]',
-              '[data-message-author="assistant"]',
-              '.agent-turn'
-            ].forEach(selector => {
-              document.querySelectorAll(selector).forEach(el => out.push(el));
+          function sortDocumentOrder(items) {
+            return uniqueElements(items).sort((a, b) => {
+              if (a === b) return 0;
+              const pos = a.compareDocumentPosition(b);
+              if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+              if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+              return 0;
             });
-            return uniqueElements(out);
-          }
-
-          function userContainers() {
-            return Array.from(document.querySelectorAll(
-              '[data-message-author-role="user"],' +
-              'section[data-turn="user"],' +
-              '[data-turn="user"],' +
-              '[data-role="user"],' +
-              '[data-message-author="user"],' +
-              '.user-turn'
-            ));
           }
 
           function turnBoundary(node) {
@@ -397,44 +395,6 @@ class WebAdbBridge(
           function isBeforeNode(candidate, node) {
             if (!candidate || !node || candidate === node || candidate.contains(node)) return false;
             return !!(candidate.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
-          }
-
-          function userContextFor(node) {
-            let count = 0;
-            let latestText = '';
-            userContainers().forEach(user => {
-              const boundary = turnBoundary(user);
-              if (!isBeforeNode(boundary, node)) return;
-              count += 1;
-              latestText = (user.innerText || user.textContent || '').trim();
-            });
-            return 'user-' + count + '-' + hashText(latestText);
-          }
-
-          function latestUserBoundary() {
-            const users = userContainers();
-            if (!users.length) return null;
-            return turnBoundary(users[users.length - 1]);
-          }
-
-          function isAfterLatestUserBoundary(node) {
-            const boundary = latestUserBoundary();
-            if (!boundary) return true;
-            return isBeforeNode(boundary, node);
-          }
-
-          function requestIdFor(code, text) {
-            const role = code.closest(
-              '[data-message-author-role="assistant"],' +
-              'section[data-turn="assistant"],' +
-              '[data-turn="assistant"],' +
-              '[data-role="assistant"],' +
-              '[data-message-author="assistant"],' +
-              '.agent-turn'
-            );
-            const codes = role ? Array.from(role.querySelectorAll('pre')) : [code];
-            const codeIndex = Math.max(0, codes.indexOf(code));
-            return userContextFor(code) + ':' + codeIndex + ':' + hashText(text);
           }
 
           function isUserOrComposerNode(node) {
@@ -451,37 +411,76 @@ class WebAdbBridge(
             );
           }
 
-          function candidateBlocks() {
+          function userSurfaces() {
             const out = [];
-
-            assistantContainers().forEach(role => {
-              const nestedCode = Array.from(role.querySelectorAll('pre code'));
-              const preBlocks = Array.from(role.querySelectorAll('pre'));
-              const looseCode = Array.from(role.querySelectorAll('code'))
-                .filter(code => !code.closest('pre'));
-
-              if (nestedCode.length) {
-                nestedCode.forEach(code => out.push(code));
-              } else if (preBlocks.length) {
-                preBlocks.forEach(code => out.push(code));
-              }
-
-              looseCode.forEach(code => out.push(code));
-
-              const wholeText = (role.innerText || role.textContent || '');
-              if (!nestedCode.length && !preBlocks.length && wholeText.includes(MARKER)) {
-                out.push(role);
-              }
+            [
+              '[data-message-author-role="user"]',
+              'section[data-turn="user"]',
+              '[data-turn="user"]',
+              '[data-role="user"]',
+              '[data-message-author="user"]',
+              '.user-turn'
+            ].forEach(selector => {
+              document.querySelectorAll(selector).forEach(el => out.push(turnBoundary(el)));
             });
+            return sortDocumentOrder(out);
+          }
 
-            // Fallback for ChatGPT DOM variants where the assistant container
-            // no longer exposes a stable role attribute. Scan rendered code
-            // nodes globally, but never inside the composer or user turns.
-            document.querySelectorAll('pre code, pre, code').forEach(node => {
-              if (!isUserOrComposerNode(node)) out.push(node);
+          function assistantSurfaces() {
+            const out = [];
+            [
+              '[data-message-author-role="assistant"]',
+              'section[data-turn="assistant"]',
+              '[data-turn="assistant"]',
+              '[data-role="assistant"]',
+              '[data-message-author="assistant"]',
+              '.agent-turn'
+            ].forEach(selector => {
+              document.querySelectorAll(selector).forEach(el => out.push(turnBoundary(el)));
             });
+            return sortDocumentOrder(out);
+          }
 
-            return uniqueElements(out);
+          function latestAssistantSurface() {
+            const surfaces = assistantSurfaces();
+            if (surfaces.length) return surfaces[surfaces.length - 1];
+
+            const genericTurns = sortDocumentOrder(Array.from(document.querySelectorAll(
+              '[data-testid^="conversation-turn-"],section[data-turn],article[data-turn]'
+            ))).filter(turn => !isUserOrComposerNode(turn));
+            if (genericTurns.length) return genericTurns[genericTurns.length - 1];
+
+            const codeNodes = sortDocumentOrder(Array.from(document.querySelectorAll(
+              'main pre code, main pre, main code'
+            )).filter(node => !isUserOrComposerNode(node)));
+            if (!codeNodes.length) return null;
+            return turnBoundary(codeNodes[codeNodes.length - 1]);
+          }
+
+          function previousUserContextKey(node) {
+            let latestText = '';
+            userSurfaces().forEach(user => {
+              if (!isBeforeNode(user, node)) return;
+              latestText = (user.innerText || user.textContent || '').trim();
+            });
+            return hashText(latestText);
+          }
+
+          function assistantSnapshot() {
+            const surface = latestAssistantSurface();
+            if (!surface) return null;
+            const text = (surface.innerText || surface.textContent || '').trim();
+            if (!text) return null;
+            return {
+              surface: surface,
+              text: text,
+              key: previousUserContextKey(surface) + ':' + hashText(text)
+            };
+          }
+
+          function currentAssistantKey() {
+            const snapshot = assistantSnapshot();
+            return snapshot ? snapshot.key : '';
           }
 
           function isVisible(el) {
@@ -517,9 +516,6 @@ class WebAdbBridge(
                 aria.includes('发送') || aria.includes('提交')) return true;
             if (title.includes('send') || title.includes('submit') ||
                 title.includes('发送') || title.includes('提交')) return true;
-
-            // Current ChatGPT reuses #composer-submit-button for Send and Stop.
-            // Only accept the generic id when the button is not in a Stop state.
             return button.id === 'composer-submit-button';
           }
 
@@ -534,14 +530,6 @@ class WebAdbBridge(
 
           function isStreaming() {
             return stopButtons().some(button => isVisible(button) && !button.disabled);
-          }
-
-          function markExisting() {
-            candidateBlocks().forEach(code => {
-              const text = (code.innerText || code.textContent || '').trim();
-              if (!text) return;
-              seen.add(requestIdFor(code, text));
-            });
           }
 
           function extractPayload(node) {
@@ -561,65 +549,136 @@ class WebAdbBridge(
             return payload.join('\n').trim();
           }
 
-          function matchingBlocks() {
-            return candidateBlocks()
-              .map(code => {
-                const text = extractPayload(code);
-                return { code, text };
-              })
-              .filter(item => !!item.text);
+          function commandPayloads(surface) {
+            if (!surface) return [];
+            const out = [];
+            const nestedCode = Array.from(surface.querySelectorAll('pre code'));
+            const preBlocks = Array.from(surface.querySelectorAll('pre'));
+            const looseCode = Array.from(surface.querySelectorAll('code'))
+              .filter(code => !code.closest('pre'));
+
+            if (nestedCode.length) {
+              nestedCode.forEach(code => out.push(code));
+            } else if (preBlocks.length) {
+              preBlocks.forEach(pre => out.push(pre));
+            }
+            looseCode.forEach(code => out.push(code));
+
+            if (!out.length) {
+              const wholeText = (surface.innerText || surface.textContent || '');
+              if (wholeText.includes(MARKER)) out.push(surface);
+            }
+
+            return uniqueElements(out)
+              .map(node => extractPayload(node))
+              .filter(payload => !!payload);
           }
 
-          function dispatchBlock(item, force) {
-            const id = requestIdFor(item.code, item.text);
-            if (!force && seen.has(id)) return false;
-            seen.add(id);
-            nativeStatus(force ? 'ADB_EXEC_FORCE_FOUND' : 'ADB_EXEC_FOUND', id);
+          function scheduleTransactionAdvance(delayMs) {
+            if (transactionTimer) clearTimeout(transactionTimer);
+            transactionTimer = setTimeout(() => {
+              transactionTimer = null;
+              advanceTransaction(false);
+            }, Math.max(150, delayMs || 350));
+          }
+
+          function beginTransaction(source) {
+            transactionCounter += 1;
+            activeTransaction = {
+              id: 'tx-' + transactionCounter,
+              source: source || 'user',
+              phase: PHASE_WAITING_ASSISTANT,
+              baselineKey: currentAssistantKey(),
+              candidateKey: '',
+              candidateSince: 0,
+              commandIndex: 0,
+              currentRequestId: null
+            };
+            nativeStatus(
+              'TX_BEGIN',
+              activeTransaction.id + ':' + activeTransaction.source
+            );
+            scheduleTransactionAdvance(250);
+          }
+
+          function finishTransaction(reason) {
+            if (!activeTransaction) return;
+            nativeStatus(
+              'TX_DONE',
+              activeTransaction.id + ':' + String(reason || 'complete')
+            );
+            activeTransaction = null;
+            if (transactionTimer) {
+              clearTimeout(transactionTimer);
+              transactionTimer = null;
+            }
+          }
+
+          function advanceTransaction(force) {
+            if (!enabled || !activeTransaction) return;
+            const tx = activeTransaction;
+            if (tx.phase !== PHASE_WAITING_ASSISTANT) return;
+
+            const snapshot = assistantSnapshot();
+            if (!snapshot) {
+              scheduleTransactionAdvance(400);
+              return;
+            }
+
+            if (!force && snapshot.key === tx.baselineKey) {
+              scheduleTransactionAdvance(400);
+              return;
+            }
+
+            const now = Date.now();
+            if (tx.candidateKey !== snapshot.key) {
+              tx.candidateKey = snapshot.key;
+              tx.candidateSince = now;
+              if (!force) {
+                scheduleTransactionAdvance(450);
+                return;
+              }
+            }
+
+            const stableFor = now - tx.candidateSince;
+            if (!force && stableFor < 650) {
+              scheduleTransactionAdvance(300);
+              return;
+            }
+
+            if (!force && isStreaming() && stableFor < 1800) {
+              scheduleTransactionAdvance(350);
+              return;
+            }
+
+            tx.baselineKey = snapshot.key;
+            tx.candidateKey = '';
+            tx.candidateSince = 0;
+
+            const payloads = commandPayloads(snapshot.surface);
+            if (!payloads.length) {
+              finishTransaction('assistant-final');
+              return;
+            }
+
+            if (payloads.length > 1) {
+              nativeStatus('TX_MULTIPLE_BLOCKS', tx.id + ':' + payloads.length);
+            }
+
+            const payload = payloads[0];
+            tx.commandIndex += 1;
+            const requestId =
+              tx.id + ':' + tx.commandIndex + ':' + hashText(payload);
+            tx.currentRequestId = requestId;
+            tx.phase = PHASE_EXECUTING;
+
+            nativeStatus('TX_EXECUTE', requestId);
             try {
-              window.GPTAndroidUseNative.executeBlock(TOKEN, id, item.text);
-              return true;
+              window.GPTAndroidUseNative.executeBlock(TOKEN, requestId, payload);
             } catch (e) {
               nativeStatus('NATIVE_CALL_ERROR', String(e));
-              return false;
+              finishTransaction('native-call-error');
             }
-          }
-
-          function scan(force) {
-            if (!enabled) return;
-
-            const matches = matchingBlocks();
-
-            if (force) {
-              const latest = matches.length ? matches[matches.length - 1] : null;
-              if (!latest) {
-                nativeStatus('SCAN_NO_ADB_EXEC', 'blocks=' + candidateBlocks().length);
-                return;
-              }
-              if (isStreaming()) {
-                nativeStatus(
-                  'SCAN_WAIT_STREAMING',
-                  'visibleStop=' + stopButtons().filter(isVisible).length
-                );
-                return;
-              }
-              dispatchBlock(latest, true);
-              return;
-            }
-
-            if (isStreaming()) {
-              nativeStatus(
-                'SCAN_WAIT_STREAMING',
-                'visibleStop=' + stopButtons().filter(isVisible).length
-              );
-              return;
-            }
-
-            matches.forEach(item => dispatchBlock(item, false));
-          }
-
-          function scheduleScan() {
-            if (timer) clearTimeout(timer);
-            timer = setTimeout(() => scan(false), 1200);
           }
 
           function findComposer() {
@@ -682,7 +741,10 @@ class WebAdbBridge(
             if (!current) return false;
             if (current.includes(PROTOCOL_TAG)) return true;
             const ok = setComposerText(editor, current + BRIDGE_HINT);
-            nativeStatus(ok ? 'PROTOCOL_ATTACHED' : 'PROTOCOL_ATTACH_FAILED', editor.id || editor.tagName);
+            nativeStatus(
+              ok ? 'PROTOCOL_ATTACHED' : 'PROTOCOL_ATTACH_FAILED',
+              editor.id || editor.tagName
+            );
             return ok;
           }
 
@@ -710,10 +772,12 @@ class WebAdbBridge(
               'button[aria-label*="发送"],' +
               'button[aria-label*="提交"]'
             ));
-            return candidates.find(button => isVisible(button) && isSendActionButton(button)) || null;
+            return candidates.find(button =>
+              isVisible(button) && isSendActionButton(button)
+            ) || null;
           }
 
-          function clickSend() {
+          function clickSend(source) {
             const button = findSendButton();
             if (!button) {
               const stop = stopButtons().find(isVisible);
@@ -730,6 +794,8 @@ class WebAdbBridge(
               );
               return false;
             }
+
+            if (source) beginTransaction(source);
             bypassNextSend = true;
             button.click();
             nativeStatus(
@@ -747,7 +813,7 @@ class WebAdbBridge(
             }, Math.max(100, delayMs || 250));
           }
 
-          function enqueueInternalMessage(id, text, kind) {
+          function enqueueInternalMessage(id, text, kind, transactionId) {
             if (!enabled || !id || !text) return false;
             if (sentInternalIds.has(id) || internalQueue.some(item => item.id === id)) {
               nativeStatus('INTERNAL_DUPLICATE_IGNORED', id);
@@ -757,6 +823,7 @@ class WebAdbBridge(
               id: id,
               text: text,
               kind: kind || 'internal',
+              transactionId: transactionId || '',
               prepared: false
             });
             nativeStatus('INTERNAL_QUEUED', id);
@@ -768,7 +835,23 @@ class WebAdbBridge(
             sentInternalIds.add(item.id);
             const index = internalQueue.findIndex(candidate => candidate.id === item.id);
             if (index >= 0) internalQueue.splice(index, 1);
-            if (item.kind === 'oneTap') oneTapPending = false;
+
+            if (item.kind === 'oneTap') {
+              oneTapPending = false;
+              beginTransaction('oneTap');
+            } else if (
+              item.kind === 'result' &&
+              activeTransaction &&
+              activeTransaction.id === item.transactionId
+            ) {
+              activeTransaction.baselineKey = currentAssistantKey();
+              activeTransaction.candidateKey = '';
+              activeTransaction.candidateSince = 0;
+              activeTransaction.currentRequestId = null;
+              activeTransaction.phase = PHASE_WAITING_ASSISTANT;
+              nativeStatus('TX_RESULT_SENT', activeTransaction.id);
+              scheduleTransactionAdvance(250);
+            }
           }
 
           function flushInternalQueue() {
@@ -813,8 +896,6 @@ class WebAdbBridge(
 
             const currentPrepared = composerText(editor);
             if (!currentPrepared.trim()) {
-              // React cleared/rebuilt the composer before the click. Prepare once again,
-              // but never while Stop is active.
               item.prepared = false;
               scheduleInternalFlush(150);
               return;
@@ -832,6 +913,7 @@ class WebAdbBridge(
             button.click();
             finishInternalItem(item);
             internalSendInProgress = false;
+
             nativeStatus(
               'INTERNAL_SENT',
               item.id + ':' + (button.getAttribute('data-testid') || button.id || 'button')
@@ -841,67 +923,84 @@ class WebAdbBridge(
           }
 
           window.__gptAndroidUseBridgeResult = function(id, ok, output) {
+            if (
+              !activeTransaction ||
+              activeTransaction.phase !== PHASE_EXECUTING ||
+              activeTransaction.currentRequestId !== id
+            ) {
+              nativeStatus('STALE_RESULT_IGNORED', id);
+              return;
+            }
+
+            activeTransaction.phase = PHASE_RESULT_PENDING;
+            const txId = activeTransaction.id;
             const message =
               'ADB_RESULT ' + id + '\n' +
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
               'The device command has finished. Do not issue another ADB_EXEC unless ' +
               'the original user request still requires an additional distinct device action.';
-            enqueueInternalMessage('result:' + id, message, 'result');
+
+            enqueueInternalMessage(
+              'result:' + id,
+              message,
+              'result',
+              txId
+            );
           };
 
           window.__gptAndroidUseBridgeBootstrap = function() {
-            nativeStatus('INLINE_PROTOCOL_READY', 'protocol attaches to the next user message');
+            nativeStatus('INLINE_PROTOCOL_READY', 'state-machine bridge ready');
           };
 
           window.__gptAndroidUseOneTapAdbRun = function() {
             if (!enabled) return;
-            if (oneTapPending || isStreaming()) {
-              nativeStatus('ADB_RUN_BUSY', oneTapPending ? 'pending' : 'streaming');
+            if (oneTapPending || activeTransaction || isStreaming()) {
+              nativeStatus(
+                'ADB_RUN_BUSY',
+                oneTapPending ? 'pending' :
+                  (activeTransaction ? activeTransaction.phase : 'streaming')
+              );
               return;
             }
+
             const prompt =
               '请通过 Android ADB 读取当前手机电池状态。不要解释，不要回复 understood。' +
               '请严格只返回一个代码块，第一行必须是 ADB_EXEC，下一行使用 dumpsys battery。' +
               BRIDGE_HINT;
+
             oneTapPending = true;
             oneTapCounter += 1;
             nativeStatus('ADB_RUN_BUTTON', 'queued battery-status request');
             enqueueInternalMessage(
               'one-tap:' + oneTapCounter,
               prompt,
-              'oneTap'
+              'oneTap',
+              ''
             );
           };
 
           window.__gptAndroidUseSelfCheck = function() {
             const editor = findComposer();
-            const send = firstMatch([
-              'button[data-testid="send-button"]',
-              '#composer-submit-button',
-              'button[data-testid="composer-submit-button"]',
-              'button[aria-label="Send prompt"]',
-              'button[aria-label*="Send" i]:not([aria-label*="Stop" i])'
-            ]);
+            const snapshot = assistantSnapshot();
             nativeStatus(
               'SELF_CHECK',
               'editor=' + (!!editor) +
-              ',send=' + (!!send) +
-              ',assistant=' + assistantContainers().length +
-              ',sections=' + document.querySelectorAll('section[data-turn="assistant"]').length +
-              ',roleNodes=' + document.querySelectorAll('[data-message-author-role="assistant"]').length +
-              ',blocks=' + candidateBlocks().length +
-              ',globalCode=' + document.querySelectorAll('pre code, pre, code').length +
-              ',adbExec=' + matchingBlocks().length +
+              ',assistant=' + assistantSurfaces().length +
               ',streaming=' + isStreaming() +
               ',sendState=' + (!!findSendButton()) +
-              ',stopState=' + stopButtons().some(isVisible)
+              ',tx=' + (activeTransaction ? activeTransaction.phase : 'IDLE') +
+              ',assistantKey=' + (snapshot ? snapshot.key : 'none')
             );
           };
 
           window.__gptAndroidUseScanNow = function() {
-            nativeStatus('FORCE_SCAN_START', 'path=' + location.pathname);
-            scan(true);
+            if (!activeTransaction) {
+              nativeStatus('FORCE_SCAN_IDLE', 'no active transaction');
+              return;
+            }
+            nativeStatus('FORCE_SCAN_START', activeTransaction.id);
+            advanceTransaction(true);
           };
 
           document.addEventListener('click', function(event) {
@@ -916,7 +1015,12 @@ class WebAdbBridge(
 
             const editor = findComposer();
             const text = composerText(editor);
-            if (!text.trim() || text.includes(PROTOCOL_TAG)) return;
+            if (!text.trim()) return;
+
+            if (text.includes(PROTOCOL_TAG)) {
+              beginTransaction('user');
+              return;
+            }
 
             event.preventDefault();
             event.stopImmediatePropagation();
@@ -929,6 +1033,7 @@ class WebAdbBridge(
                 nativeStatus('USER_SEND_ABORTED_NO_SEND', 'button state changed');
                 return;
               }
+              beginTransaction('user');
               bypassNextSend = true;
               freshButton.click();
               nativeStatus(
@@ -946,14 +1051,19 @@ class WebAdbBridge(
             if (!(event.target === editor || editor.contains(event.target))) return;
 
             const text = composerText(editor);
-            if (!text.trim() || text.includes(PROTOCOL_TAG)) return;
+            if (!text.trim()) return;
+
+            if (text.includes(PROTOCOL_TAG)) {
+              beginTransaction('user');
+              return;
+            }
 
             event.preventDefault();
             event.stopImmediatePropagation();
 
             if (!attachProtocolToComposer()) return;
             setTimeout(() => {
-              if (!clickSend()) {
+              if (!clickSend('user')) {
                 nativeStatus('USER_SEND_ABORTED_NO_SEND', 'keydown');
               }
             }, 100);
@@ -961,18 +1071,20 @@ class WebAdbBridge(
 
           window.__gptAndroidUseSetBridgeEnabled = function(value) {
             enabled = !!value;
-            if (enabled) {
-              markExisting();
-              scheduleScan();
-              scheduleInternalFlush(100);
+            if (!enabled) {
+              if (transactionTimer) clearTimeout(transactionTimer);
+              if (internalSendTimer) clearTimeout(internalSendTimer);
+              return;
             }
+            scheduleTransactionAdvance(250);
+            scheduleInternalFlush(100);
           };
 
-          markExisting();
           const observer = new MutationObserver(() => {
-            scheduleScan();
-            scheduleInternalFlush(120);
+            if (activeTransaction) scheduleTransactionAdvance(350);
+            if (internalQueue.length) scheduleInternalFlush(120);
           });
+
           observer.observe(document.documentElement, {
             childList: true,
             subtree: true,
