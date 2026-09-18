@@ -47,17 +47,20 @@ class AdbSetupActivity : AppCompatActivity() {
 
         binding.discoverConnectButton.setOnClickListener {
             runTask("Searching for _adb-tls-connect._tcp…", "Wireless ADB: ready") {
-                val port = ShizukuStyleAdbDiscovery.discoverPortBlocking(
+                val endpoint = ShizukuStyleAdbDiscovery.discoverEndpointBlocking(
                     applicationContext,
                     ShizukuStyleAdbDiscovery.TLS_CONNECT,
                     15_000
                 ).getOrThrow()
 
-                adb.connect(ShizukuStyleAdbDiscovery.LOOPBACK, port).map {
-                    binding.connectionPortInput.post {
-                        binding.connectionPortInput.setText(port.toString())
+                adb.connect(endpoint.host, endpoint.port).map {
+                    binding.hostInput.post {
+                        binding.hostInput.setText(endpoint.host)
                     }
-                    "Connected through " + ShizukuStyleAdbDiscovery.LOOPBACK + ":" + port
+                    binding.connectionPortInput.post {
+                        binding.connectionPortInput.setText(endpoint.port.toString())
+                    }
+                    "Connected to " + endpoint.host + ":" + endpoint.port
                 }
             }
         }

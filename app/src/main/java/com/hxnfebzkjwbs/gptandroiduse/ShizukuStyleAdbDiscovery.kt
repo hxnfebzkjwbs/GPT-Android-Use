@@ -3,25 +3,26 @@ package com.hxnfebzkjwbs.gptandroiduse
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
-import java.io.IOException
-import java.net.InetSocketAddress
+import java.net.InetAddress
 import java.net.NetworkInterface
-import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Wireless ADB service discovery following the same high-level strategy as Shizuku:
- * discover the Android mDNS service, verify that the resolved service belongs to
- * a local interface, then use only its port and connect through loopback.
+ * Discovers Android Wireless ADB mDNS services and accepts only services whose
+ * resolved host address belongs to this device.
  */
 class ShizukuStyleAdbDiscovery(
     context: Context,
     private val serviceType: String,
-    private val onPort: (Int) -> Unit,
+    private val onPort: (Int) -> Unit = {},
+    private val onEndpoint: (Endpoint) -> Unit = {},
     private val onError: (String) -> Unit = {}
 ) {
+    data class Endpoint(val host: String, val port: Int)
+
     private val nsdManager = context.getSystemService(NsdManager::class.java)
     @Volatile private var running = false
     @Volatile private var registered = false
@@ -52,14 +53,23 @@ class ShizukuStyleAdbDiscovery(
                 nsdManager.resolveService(
                     serviceInfo,
                     object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+                        override fun onResolveFailed(
+                            serviceInfo: NsdServiceInfo,
+                            errorCode: Int
+                        ) = Unit
 
                         override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                             if (!running) return
-                            val host = serviceInfo.host?.hostAddress ?: return
-                            if (isAddressOnThisDevice(host) && isPortBoundOnLoopback(serviceInfo.port)) {
-                                onPort(serviceInfo.port)
-                            }
+                            val address = serviceInfo.host ?: return
+                            val port = serviceInfo.port
+                            if (port !in 1..65535) return
+                            if (!isAddressOnThisDevice(address)) return
+
+                            val endpoint = Endpoint(address.hostAddress.orEmpty(), port)
+                            if (endpoint.host.isBlank()) return
+
+                            onEndpoint(endpoint)
+                            onPort(port)
                         }
                     }
                 )
@@ -81,25 +91,16 @@ class ShizukuStyleAdbDiscovery(
         runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
     }
 
-    private fun isAddressOnThisDevice(address: String): Boolean {
+    private fun isAddressOnThisDevice(address: InetAddress): Boolean {
         return runCatching {
+            val target = address.address
             NetworkInterface.getNetworkInterfaces()
                 ?.asSequence()
                 ?.flatMap { it.inetAddresses.asSequence() }
-                ?.any { it.hostAddress == address } == true
+                ?.any { candidate ->
+                    candidate.address.contentEquals(target)
+                } == true
         }.getOrDefault(false)
-    }
-
-    private fun isPortBoundOnLoopback(port: Int): Boolean {
-        return try {
-            ServerSocket().use {
-                it.reuseAddress = true
-                it.bind(InetSocketAddress(LOOPBACK, port), 1)
-            }
-            false
-        } catch (_: IOException) {
-            true
-        }
     }
 
     companion object {
@@ -107,23 +108,23 @@ class ShizukuStyleAdbDiscovery(
         const val TLS_PAIRING = "_adb-tls-pairing._tcp"
         const val TLS_CONNECT = "_adb-tls-connect._tcp"
 
-        fun discoverPortBlocking(
+        fun discoverEndpointBlocking(
             context: Context,
             serviceType: String,
             timeoutMillis: Long = 15_000
-        ): Result<Int> = runCatching {
+        ): Result<Endpoint> = runCatching {
             val latch = CountDownLatch(1)
-            val port = AtomicInteger(-1)
-            var error: String? = null
+            val endpoint = AtomicReference<Endpoint?>(null)
+            val error = AtomicReference<String?>(null)
 
             val discovery = ShizukuStyleAdbDiscovery(
                 context,
                 serviceType,
-                onPort = {
-                    if (port.compareAndSet(-1, it)) latch.countDown()
+                onEndpoint = {
+                    if (endpoint.compareAndSet(null, it)) latch.countDown()
                 },
                 onError = {
-                    error = it
+                    error.compareAndSet(null, it)
                     latch.countDown()
                 }
             )
@@ -133,12 +134,21 @@ class ShizukuStyleAdbDiscovery(
                 if (!latch.await(timeoutMillis, TimeUnit.MILLISECONDS)) {
                     error("Timed out while searching for $serviceType")
                 }
-                error?.let { error(it) }
-                port.get().takeIf { it in 1..65535 }
-                    ?: error("No valid Wireless ADB service port found")
+                error.get()?.let { error(it) }
+                endpoint.get() ?: error("No valid Wireless ADB endpoint found")
             } finally {
                 discovery.stop()
             }
         }
+
+        fun discoverPortBlocking(
+            context: Context,
+            serviceType: String,
+            timeoutMillis: Long = 15_000
+        ): Result<Int> = discoverEndpointBlocking(
+            context,
+            serviceType,
+            timeoutMillis
+        ).map { it.port }
     }
 }

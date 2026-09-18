@@ -49,14 +49,14 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         val manager = manager()
         if (manager.isConnected) return@runCatching
 
-        val port = ShizukuStyleAdbDiscovery.discoverPortBlocking(
+        val endpoint = ShizukuStyleAdbDiscovery.discoverEndpointBlocking(
             context,
             ShizukuStyleAdbDiscovery.TLS_CONNECT,
             AUTO_CONNECT_TIMEOUT_MS
         ).getOrThrow()
 
-        check(manager.connect(ShizukuStyleAdbDiscovery.LOOPBACK, port)) {
-            "Wireless ADB TLS connection failed on port $port"
+        check(manager.connect(endpoint.host, endpoint.port)) {
+            "Wireless ADB TLS connection failed at ${endpoint.host}:${endpoint.port}"
         }
     }
 
