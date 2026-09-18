@@ -35,10 +35,18 @@
             android:text="Open wireless debugging" />
 
         <EditText
+            android:id="@+id/hostInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Wireless debugging IP, e.g. 172.19.0.1"
+            android:inputType="textUri"
+            android:singleLine="true" />
+
+        <EditText
             android:id="@+id/pairingPortInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Pairing port shown by Android"
+            android:hint="Pairing port (requires 6-digit code)"
             android:inputType="number" />
 
         <EditText
@@ -55,11 +63,24 @@
             android:layout_height="wrap_content"
             android:text="Pair this phone" />
 
-        <Button
-            android:id="@+id/connectButton"
+        <EditText
+            android:id="@+id/connectionPortInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Auto-connect paired device" />
+            android:hint="Connection port (Wireless debugging main page)"
+            android:inputType="number" />
+
+        <Button
+            android:id="@+id/connectManualButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Connect using address and port" />
+
+        <Button
+            android:id="@+id/connectAutoButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Auto-discover connection port (mDNS)" />
 
         <EditText
             android:id="@+id/commandInput"
