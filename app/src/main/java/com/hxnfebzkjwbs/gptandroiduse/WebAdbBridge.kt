@@ -80,6 +80,24 @@ class WebAdbBridge(
         webView.evaluateJavascript(installScript(), null)
     }
 
+    fun checkAdbOnStartup() {
+        executor.execute {
+            if (adb.isConnected()) {
+                postStatus("ADB: connected")
+                return@execute
+            }
+
+            postStatus("ADB: disconnected · reconnecting…")
+            val result = ensureAdbReady()
+            if (result.isSuccess) {
+                postStatus("ADB: connected")
+            } else {
+                val message = result.exceptionOrNull()?.message ?: "unknown error"
+                postStatus("ADB: reconnect failed · $message")
+            }
+        }
+    }
+
     fun runSelfTest() {
         if (!enabled) {
             postStatus("Bridge test: turn Bridge ON first")

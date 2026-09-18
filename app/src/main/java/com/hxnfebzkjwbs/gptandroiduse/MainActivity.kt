@@ -55,6 +55,10 @@ class MainActivity : AppCompatActivity() {
 
         configureWebView()
 
+        if (savedInstanceState == null) {
+            pageAdbBridge.checkAdbOnStartup()
+        }
+
         binding.bridgeToggleButton.setOnClickListener {
             bridgeEnabled = !bridgeEnabled
             pageAdbBridge.setEnabled(bridgeEnabled)
