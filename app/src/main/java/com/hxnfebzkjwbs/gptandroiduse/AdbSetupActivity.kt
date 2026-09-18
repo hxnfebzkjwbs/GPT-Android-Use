@@ -36,6 +36,7 @@ class AdbSetupActivity : AppCompatActivity() {
         binding.deviceText.text = "Device: " + Build.MANUFACTURER + " " + Build.MODEL +
             " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
         binding.hostInput.setText(ShizukuStyleAdbDiscovery.LOOPBACK)
+        updateSelfHealButton()
 
         val advice = OemCompatibility.current()
         binding.oemText.text = advice.level.toString() + ": " + advice.message
@@ -57,6 +58,35 @@ class AdbSetupActivity : AppCompatActivity() {
                         binding.connectionPortInput.setText(port.toString())
                     }
                     "Connected through " + ShizukuStyleAdbDiscovery.LOOPBACK + ":" + port
+                }
+            }
+        }
+
+        binding.enableSelfHealButton.setOnClickListener {
+            if (AdbSelfHeal.isEnabled(applicationContext) && adb.hasSelfHealPermission()) {
+                AdbSelfHeal.setEnabled(applicationContext, false)
+                updateSelfHealButton()
+                binding.statusText.text = "Wireless ADB self-heal: OFF"
+                showResult(
+                    "Automatic Wireless ADB re-enable is disabled. " +
+                        "The WRITE_SECURE_SETTINGS grant remains until the app is uninstalled."
+                )
+            } else {
+                runTask(
+                    "Granting WRITE_SECURE_SETTINGS through current ADB…",
+                    "Wireless ADB self-heal: ON"
+                ) {
+                    runCatching {
+                        adb.autoConnect().getOrThrow()
+                        adb.grantSelfHealPermission().getOrThrow()
+                        AdbSelfHeal.setEnabled(applicationContext, true)
+                        if (adb.isWifiConnected()) {
+                            adb.enableWirelessDebugging().getOrThrow()
+                        }
+                        runOnUiThread { updateSelfHealButton() }
+                        "Self-heal enabled. Future Wireless ADB dropouts will auto-reconnect; " +
+                            "if Android turns Wireless debugging off, the app can turn it back on."
+                    }
                 }
             }
         }
@@ -90,6 +120,14 @@ class AdbSetupActivity : AppCompatActivity() {
             val command = binding.commandInput.text.toString()
             runTask("Executing…", "Wireless ADB: ready") { adb.execute(command) }
         }
+    }
+
+    private fun updateSelfHealButton() {
+        val active = AdbSelfHeal.isEnabled(applicationContext) &&
+            adb.hasSelfHealPermission()
+        binding.enableSelfHealButton.text =
+            if (active) "ADB self-heal: ON (tap to disable)"
+            else "3. Enable ADB self-heal (one time)"
     }
 
     private fun requestNotificationThenPair() {
