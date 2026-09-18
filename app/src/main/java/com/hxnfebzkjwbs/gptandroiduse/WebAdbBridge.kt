@@ -376,6 +376,53 @@ class WebAdbBridge(
             return uniqueElements(out);
           }
 
+          function userContainers() {
+            return Array.from(document.querySelectorAll(
+              '[data-message-author-role="user"],' +
+              'section[data-turn="user"],' +
+              '[data-turn="user"],' +
+              '[data-role="user"],' +
+              '[data-message-author="user"],' +
+              '.user-turn'
+            ));
+          }
+
+          function turnBoundary(node) {
+            if (!node || !node.closest) return node;
+            return node.closest(
+              '[data-testid^="conversation-turn-"],section[data-turn],article[data-turn]'
+            ) || node;
+          }
+
+          function isBeforeNode(candidate, node) {
+            if (!candidate || !node || candidate === node || candidate.contains(node)) return false;
+            return !!(candidate.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+          }
+
+          function userContextFor(node) {
+            let count = 0;
+            let latestText = '';
+            userContainers().forEach(user => {
+              const boundary = turnBoundary(user);
+              if (!isBeforeNode(boundary, node)) return;
+              count += 1;
+              latestText = (user.innerText || user.textContent || '').trim();
+            });
+            return 'user-' + count + '-' + hashText(latestText);
+          }
+
+          function latestUserBoundary() {
+            const users = userContainers();
+            if (!users.length) return null;
+            return turnBoundary(users[users.length - 1]);
+          }
+
+          function isAfterLatestUserBoundary(node) {
+            const boundary = latestUserBoundary();
+            if (!boundary) return true;
+            return isBeforeNode(boundary, node);
+          }
+
           function requestIdFor(code, text) {
             const role = code.closest(
               '[data-message-author-role="assistant"],' +
@@ -385,14 +432,9 @@ class WebAdbBridge(
               '[data-message-author="assistant"],' +
               '.agent-turn'
             );
-            const turn = code.closest(
-              '[data-testid^="conversation-turn-"],section[data-turn],article[data-turn]'
-            );
-            const turnKey = turn ? (turn.getAttribute('data-testid') || '') :
-              'assistant-' + Math.max(0, assistantContainers().indexOf(role));
             const codes = role ? Array.from(role.querySelectorAll('pre')) : [code];
             const codeIndex = Math.max(0, codes.indexOf(code));
-            return turnKey + ':' + codeIndex + ':' + hashText(text);
+            return userContextFor(code) + ':' + codeIndex + ':' + hashText(text);
           }
 
           function isUserOrComposerNode(node) {
@@ -520,10 +562,13 @@ class WebAdbBridge(
           }
 
           function matchingBlocks() {
-            return candidateBlocks().map(code => {
-              const text = extractPayload(code);
-              return { code, text };
-            }).filter(item => !!item.text);
+            return candidateBlocks()
+              .filter(code => isAfterLatestUserBoundary(code))
+              .map(code => {
+                const text = extractPayload(code);
+                return { code, text };
+              })
+              .filter(item => !!item.text);
           }
 
           function dispatchBlock(item, force) {
