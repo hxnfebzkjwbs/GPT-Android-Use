@@ -6,7 +6,9 @@ import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.Settings
 import android.view.View
+import android.widget.FrameLayout
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -18,12 +20,14 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.hxnfebzkjwbs.gptandroiduse.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var pageAdbBridge: WebAdbBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var overlayPromptShown = false
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -70,6 +74,7 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         pageAdbBridge.setEnabled(true)
         binding.bridgeStatusText.text = "Bridge: ON"
+        ensureOverlayCapability()
 
         if (savedInstanceState == null) {
             pageAdbBridge.checkAdbOnStartup()
@@ -114,6 +119,69 @@ class MainActivity : AppCompatActivity() {
         } else {
             binding.chatWebView.restoreState(savedInstanceState)
         }
+    }
+
+    private fun ensureOverlayCapability() {
+        if (Settings.canDrawOverlays(this)) {
+            startOverlayService()
+            return
+        }
+        if (overlayPromptShown) return
+        overlayPromptShown = true
+
+        AlertDialog.Builder(this)
+            .setTitle("Allow display over other apps")
+            .setMessage(
+                "This permission keeps the same ChatGPT WebView active while another app, such as WeChat, is in front. " +
+                    "The overlay does not accept touch input."
+            )
+            .setPositiveButton("Open settings") { _, _ ->
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + packageName)
+                    )
+                )
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    private fun startOverlayService() {
+        if (!Settings.canDrawOverlays(this)) return
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, OverlayKeepAliveService::class.java)
+        )
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::binding.isInitialized) {
+            WebViewOverlayHost.restore(
+                binding.chatWebView,
+                binding.webViewContainer
+            )
+            binding.chatWebView.resumeTimers()
+            pageAdbBridge.installForCurrentPage()
+        }
+        if (Settings.canDrawOverlays(this)) {
+            startOverlayService()
+        }
+    }
+
+    override fun onStop() {
+        if (!isFinishing &&
+            ::binding.isInitialized &&
+            Settings.canDrawOverlays(this)
+        ) {
+            startOverlayService()
+            WebViewOverlayHost.moveToOverlay(
+                applicationContext,
+                binding.chatWebView
+            )
+        }
+        super.onStop()
     }
 
     private fun configureWebView() {
@@ -244,8 +312,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        pageAdbBridge.shutdown()
         if (isFinishing) {
+            WebViewOverlayHost.release(binding.chatWebView)
+            pageAdbBridge.shutdown()
+            stopService(Intent(this, OverlayKeepAliveService::class.java))
             CookieManager.getInstance().flush()
         }
         filePathCallback?.onReceiveValue(null)
