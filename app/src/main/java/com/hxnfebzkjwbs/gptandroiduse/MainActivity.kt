@@ -47,6 +47,8 @@ class MainActivity : AppCompatActivity() {
             binding.bridgeStatusText.text = status
         }
 
+        binding.versionText.text = "v" + BuildConfig.VERSION_NAME
+
         configureWebView()
 
         binding.bridgeToggleButton.setOnClickListener {
