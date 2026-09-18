@@ -310,8 +310,23 @@ class WebAdbBridge(
             return turnKey + ':' + codeIndex + ':' + hashText(text);
           }
 
+          function isUserOrComposerNode(node) {
+            if (!node || !node.closest) return false;
+            return !!node.closest(
+              '#prompt-textarea,' +
+              'form[data-type="unified-composer"],' +
+              '[data-message-author-role="user"],' +
+              'section[data-turn="user"],' +
+              '[data-turn="user"],' +
+              '[data-role="user"],' +
+              '[data-message-author="user"],' +
+              '.user-turn'
+            );
+          }
+
           function candidateBlocks() {
             const out = [];
+
             assistantContainers().forEach(role => {
               const nestedCode = Array.from(role.querySelectorAll('pre code'));
               const preBlocks = Array.from(role.querySelectorAll('pre'));
@@ -331,6 +346,14 @@ class WebAdbBridge(
                 out.push(role);
               }
             });
+
+            // Fallback for ChatGPT DOM variants where the assistant container
+            // no longer exposes a stable role attribute. Scan rendered code
+            // nodes globally, but never inside the composer or user turns.
+            document.querySelectorAll('pre code, pre, code').forEach(node => {
+              if (!isUserOrComposerNode(node)) out.push(node);
+            });
+
             return uniqueElements(out);
           }
 
@@ -591,6 +614,7 @@ class WebAdbBridge(
               ',sections=' + document.querySelectorAll('section[data-turn="assistant"]').length +
               ',roleNodes=' + document.querySelectorAll('[data-message-author-role="assistant"]').length +
               ',blocks=' + candidateBlocks().length +
+              ',globalCode=' + document.querySelectorAll('pre code, pre, code').length +
               ',adbExec=' + matchingBlocks().length +
               ',streaming=' + isStreaming()
             );
