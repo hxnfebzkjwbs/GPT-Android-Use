@@ -563,7 +563,6 @@ class WebAdbBridge(
 
           function matchingBlocks() {
             return candidateBlocks()
-              .filter(code => isAfterLatestUserBoundary(code))
               .map(code => {
                 const text = extractPayload(code);
                 return { code, text };
