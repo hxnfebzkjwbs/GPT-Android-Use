@@ -17,7 +17,7 @@ android {
 
     signingConfigs {
         getByName("debug") {
-            storeFile = rootProject.file("ci/fixed-debug.keystore")
+            val legacyFixedKey = rootProject.file("ci/fixed-debug.keystore")\n            if (legacyFixedKey.exists()) storeFile = legacyFixedKey
         }
     }
 
