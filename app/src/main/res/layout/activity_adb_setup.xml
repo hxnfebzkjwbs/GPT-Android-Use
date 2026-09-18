@@ -40,6 +40,12 @@
             android:layout_height="wrap_content"
             android:text="2. Discover &amp; connect" />
 
+        <Button
+            android:id="@+id/enableSelfHealButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="3. Enable ADB self-heal (one time)" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
