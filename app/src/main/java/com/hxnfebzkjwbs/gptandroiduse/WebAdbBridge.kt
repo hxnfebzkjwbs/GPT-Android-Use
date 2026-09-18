@@ -8,8 +8,6 @@ import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.Collections
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
 
 class WebAdbBridge(
     context: Context,
@@ -19,9 +17,6 @@ class WebAdbBridge(
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
     private val executor = Executors.newSingleThreadExecutor()
-    private val watchdogExecutor = Executors.newSingleThreadScheduledExecutor()
-    @Volatile private var watchdogFuture: ScheduledFuture<*>? = null
-    @Volatile private var watchdogFailures = 0
     private val sessionToken = ByteArray(24).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it) }
     private val inFlight = Collections.synchronizedSet(mutableSetOf<String>())
@@ -39,7 +34,6 @@ class WebAdbBridge(
 
     fun setEnabled(value: Boolean) {
         enabled = value
-        if (value) startWatchdog() else stopWatchdog()
         webView.post {
             if (value) {
                 if (trustedTopPage) {
@@ -171,7 +165,7 @@ class WebAdbBridge(
                 }
 
                 postStatus("Bridge: connecting ADB…")
-                adb.autoConnect().getOrThrow()
+                ensureAdbReady().getOrThrow()
 
                 val output = buildString {
                     commands.forEachIndexed { index, command ->
@@ -190,6 +184,7 @@ class WebAdbBridge(
                 postStatus("Bridge: ready")
                 postResult(requestId, true, output)
             } catch (t: Throwable) {
+                adb.disconnect()
                 postStatus("Bridge: error")
                 postResult(requestId, false, t.message ?: t.javaClass.simpleName)
             } finally {
@@ -199,81 +194,29 @@ class WebAdbBridge(
         }
     }
 
-    private fun startWatchdog() {
-        val current = watchdogFuture
-        if (current != null && !current.isCancelled && !current.isDone) return
+    private fun ensureAdbReady(): Result<Unit> {
+        val firstAttempt = adb.autoConnect()
+        if (firstAttempt.isSuccess) return firstAttempt
 
-        watchdogFuture = watchdogExecutor.scheduleWithFixedDelay(
-            { watchdogTick() },
-            WATCHDOG_INITIAL_DELAY_SECONDS,
-            WATCHDOG_PERIOD_SECONDS,
-            TimeUnit.SECONDS
-        )
-    }
+        val canSelfHeal =
+            AdbSelfHeal.isEnabled(appContext) &&
+            adb.hasSelfHealPermission() &&
+            adb.isWifiConnected()
 
-    private fun stopWatchdog() {
-        watchdogFuture?.cancel(false)
-        watchdogFuture = null
-        watchdogFailures = 0
-    }
+        if (!canSelfHeal) return firstAttempt
+        if (adb.isWirelessDebuggingEnabled()) return firstAttempt
 
-    private fun watchdogTick() {
-        if (!enabled || inFlight.isNotEmpty()) return
-
-        try {
-            if (adb.isConnected()) {
-                val heartbeat = adb.execute("settings get global adb_wifi_enabled")
-                if (heartbeat.isSuccess) {
-                    if (watchdogFailures > 0) {
-                        postStatus("Bridge: ADB online")
-                    }
-                    watchdogFailures = 0
-                    return
-                }
-                postStatus("Bridge: stale ADB session · reconnecting…")
-                adb.disconnect()
-            }
-
-            if (AdbSelfHeal.isEnabled(appContext) &&
-                adb.hasSelfHealPermission() &&
-                adb.isWifiConnected() &&
-                !adb.isWirelessDebuggingEnabled()
-            ) {
-                postStatus("Bridge: re-enabling Wireless ADB…")
-                adb.enableWirelessDebugging().getOrThrow()
-                Thread.sleep(WIRELESS_ADB_RESTART_DELAY_MS)
-            }
-
-            val result = adb.autoConnect()
-            if (result.isSuccess) {
-                watchdogFailures = 0
-                postStatus("Bridge: ADB reconnected")
-                return
-            }
-
-            watchdogFailures += 1
-            if (watchdogFailures == 1) {
-                postStatus("Bridge: ADB disconnected · reconnecting…")
-            } else if (watchdogFailures == 2) {
-                val hint = if (AdbSelfHeal.isEnabled(appContext) && adb.hasSelfHealPermission()) {
-                    "Bridge: ADB offline · Wi-Fi or OEM restriction"
-                } else {
-                    "Bridge: ADB offline · tap ADB and enable self-heal"
-                }
-                postStatus(hint)
-            }
-        } catch (t: Throwable) {
-            watchdogFailures += 1
-            if (watchdogFailures <= 2) {
-                postStatus("Bridge: ADB watchdog · " + (t.message ?: t.javaClass.simpleName))
-            }
+        return runCatching {
+            postStatus("Bridge: re-enabling Wireless ADB…")
+            adb.enableWirelessDebugging().getOrThrow()
+            Thread.sleep(WIRELESS_ADB_RESTART_DELAY_MS)
+            adb.disconnect()
+            adb.autoConnect().getOrThrow()
         }
     }
 
     fun shutdown() {
         enabled = false
-        stopWatchdog()
-        watchdogExecutor.shutdownNow()
         executor.shutdownNow()
         adb.disconnect()
     }
@@ -1113,8 +1056,6 @@ class WebAdbBridge(
         private const val MAX_BLOCK_CHARS = 6_000
         private const val MAX_SINGLE_RESULT_CHARS = 6_000
         private const val MAX_RESULT_CHARS = 12_000
-        private const val WATCHDOG_INITIAL_DELAY_SECONDS = 5L
-        private const val WATCHDOG_PERIOD_SECONDS = 20L
         private const val WIRELESS_ADB_RESTART_DELAY_MS = 1_500L
     }
 }
