@@ -7,7 +7,6 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
-import io.github.muntashirakon.adb.AdbPairingRequiredException
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
@@ -49,12 +48,15 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     override fun autoConnect(): Result<Unit> = runCatching {
         val manager = manager()
         if (manager.isConnected) return@runCatching
-        try {
-            check(manager.autoConnect(context, 10_000)) {
-                "No paired Wireless ADB endpoint was found"
-            }
-        } catch (e: AdbPairingRequiredException) {
-            throw IllegalStateException("Pairing is required", e)
+
+        val port = ShizukuStyleAdbDiscovery.discoverPortBlocking(
+            context,
+            ShizukuStyleAdbDiscovery.TLS_CONNECT,
+            AUTO_CONNECT_TIMEOUT_MS
+        ).getOrThrow()
+
+        check(manager.connect(ShizukuStyleAdbDiscovery.LOOPBACK, port)) {
+            "Wireless ADB TLS connection failed on port $port"
         }
     }
 
@@ -129,5 +131,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     companion object {
         private const val ADB_WIFI_ENABLED_KEY = "adb_wifi_enabled"
         private const val PROBE_COMMAND = "settings get global development_settings_enabled"
+        private const val AUTO_CONNECT_TIMEOUT_MS = 10_000L
     }
 }
