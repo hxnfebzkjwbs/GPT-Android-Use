@@ -62,6 +62,43 @@ class WebAdbBridge(
         webView.evaluateJavascript(installScript(), null)
     }
 
+    fun runSelfTest() {
+        if (!enabled) {
+            postStatus("Bridge test: turn Bridge ON first")
+            return
+        }
+        if (!trustedTopPage) {
+            postStatus("Bridge test: current page is not chatgpt.com")
+            return
+        }
+
+        webView.post {
+            webView.evaluateJavascript(
+                "window.__gptAndroidUseSelfCheck && window.__gptAndroidUseSelfCheck();",
+                null
+            )
+        }
+
+        executor.execute {
+            try {
+                postStatus("Bridge test: connecting Wireless ADB…")
+                adb.autoConnect().getOrThrow()
+                val value = adb.execute("settings get global development_settings_enabled")
+                    .getOrThrow()
+                    .trim()
+                postStatus("Bridge test: ADB OK · dev_settings=$value")
+            } catch (t: Throwable) {
+                postStatus("Bridge test: ADB ERROR · " + (t.message ?: t.javaClass.simpleName))
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun reportStatus(token: String, stage: String, detail: String) {
+        if (!enabled || token != sessionToken || !trustedTopPage) return
+        postStatus("Bridge page: " + stage.take(40) + " · " + detail.take(160))
+    }
+
     @JavascriptInterface
     fun executeBlock(token: String, requestId: String, payload: String) {
         if (!enabled || token != sessionToken) return
@@ -181,6 +218,24 @@ class WebAdbBridge(
           let timer = null;
           const seen = new Set();
 
+          function nativeStatus(stage, detail) {
+            try {
+              window.GPTAndroidUseNative.reportStatus(
+                TOKEN,
+                String(stage || ''),
+                String(detail || '')
+              );
+            } catch (_) {}
+          }
+
+          function firstMatch(selectors) {
+            for (const selector of selectors) {
+              const el = document.querySelector(selector);
+              if (el) return el;
+            }
+            return null;
+          }
+
           function hashText(text) {
             let h = 2166136261;
             for (let i = 0; i < text.length; i++) {
@@ -199,7 +254,7 @@ class WebAdbBridge(
             const turn = code.closest('[data-testid^="conversation-turn-"]');
             const turnKey = turn ? (turn.getAttribute('data-testid') || '') :
               'assistant-' + Math.max(0, assistantContainers().indexOf(role));
-            const codes = role ? Array.from(role.querySelectorAll('pre code')) : [code];
+            const codes = role ? Array.from(role.querySelectorAll('pre')) : [code];
             const codeIndex = Math.max(0, codes.indexOf(code));
             return turnKey + ':' + codeIndex + ':' + hashText(text);
           }
@@ -207,7 +262,7 @@ class WebAdbBridge(
           function candidateBlocks() {
             const out = [];
             assistantContainers().forEach(role => {
-              role.querySelectorAll('pre code').forEach(code => out.push(code));
+              role.querySelectorAll('pre').forEach(code => out.push(code));
             });
             return out;
           }
@@ -238,9 +293,12 @@ class WebAdbBridge(
               const id = requestIdFor(code, text);
               if (seen.has(id)) return;
               seen.add(id);
+              nativeStatus('ADB_EXEC_FOUND', id);
               try {
                 window.GPTAndroidUseNative.executeBlock(TOKEN, id, text);
-              } catch (_) {}
+              } catch (e) {
+                nativeStatus('NATIVE_CALL_ERROR', String(e));
+              }
             });
           }
 
@@ -250,9 +308,15 @@ class WebAdbBridge(
           }
 
           function findComposer() {
-            return document.querySelector('#prompt-textarea') ||
-              document.querySelector('textarea[data-testid="prompt-textarea"]') ||
-              document.querySelector('[contenteditable="true"][data-testid="prompt-textarea"]');
+            return firstMatch([
+              'form[data-type="unified-composer"] #prompt-textarea[contenteditable="true"]',
+              '#prompt-textarea.ProseMirror[contenteditable="true"]',
+              '#prompt-textarea',
+              '#mobile-composer-prompt',
+              'textarea[data-testid="prompt-textarea"]',
+              '[contenteditable="true"][data-testid="prompt-textarea"]',
+              'main form div[contenteditable="true"]'
+            ]);
           }
 
           function setComposerText(editor, text) {
@@ -288,11 +352,25 @@ class WebAdbBridge(
           }
 
           function clickSend() {
-            const button = document.querySelector('button[data-testid="send-button"]') ||
-              document.querySelector('button[aria-label*="Send message"]') ||
-              document.querySelector('button[aria-label*="发送"]');
-            if (!button || button.disabled) return false;
+            const button = firstMatch([
+              'button[data-testid="send-button"]',
+              '#composer-submit-button',
+              'button[data-testid="composer-submit-button"]',
+              'button[aria-label="Send prompt"]',
+              'button[aria-label*="Send" i]:not([aria-label*="Stop" i])',
+              'button[aria-label*="发送"]',
+              'button[aria-label*="提交"]'
+            ]);
+            if (!button) {
+              nativeStatus('SEND_BUTTON_MISSING', location.pathname);
+              return false;
+            }
+            if (button.disabled) {
+              nativeStatus('SEND_BUTTON_DISABLED', button.id || button.getAttribute('data-testid') || '');
+              return false;
+            }
             button.click();
+            nativeStatus('MESSAGE_SENT', button.id || button.getAttribute('data-testid') || 'button');
             return true;
           }
 
@@ -300,10 +378,17 @@ class WebAdbBridge(
             if (!enabled) return;
             const editor = findComposer();
             if (!editor) {
+              if (attempts === 8 || attempts === 4 || attempts === 0) {
+                nativeStatus('COMPOSER_MISSING', 'attempts=' + attempts);
+              }
               if (attempts > 0) setTimeout(() => submitMessage(text, attempts - 1), 350);
               return;
             }
-            setComposerText(editor, text);
+            nativeStatus('COMPOSER_FOUND', editor.id || editor.tagName);
+            const inserted = setComposerText(editor, text);
+            if (!inserted) {
+              nativeStatus('COMPOSER_WRITE_FAILED', editor.id || editor.tagName);
+            }
             setTimeout(() => {
               if (!clickSend() && attempts > 0) {
                 setTimeout(() => submitMessage(text, attempts - 1), 350);
@@ -322,6 +407,7 @@ class WebAdbBridge(
           };
 
           window.__gptAndroidUseBridgeBootstrap = function() {
+            nativeStatus('BOOTSTRAP_START', location.pathname);
             const message =
               'Native ADB bridge is enabled for this Android device. ' +
               'When you need to operate the device, reply with exactly one fenced code block. ' +
@@ -332,6 +418,24 @@ class WebAdbBridge(
               'Execution results will return automatically as ADB_RESULT messages. ' +
               'Do not emit ADB_EXEC blocks merely as examples.';
             submitMessage(message, 8);
+          };
+
+          window.__gptAndroidUseSelfCheck = function() {
+            const editor = findComposer();
+            const send = firstMatch([
+              'button[data-testid="send-button"]',
+              '#composer-submit-button',
+              'button[data-testid="composer-submit-button"]',
+              'button[aria-label="Send prompt"]',
+              'button[aria-label*="Send" i]:not([aria-label*="Stop" i])'
+            ]);
+            nativeStatus(
+              'SELF_CHECK',
+              'editor=' + (!!editor) +
+              ',send=' + (!!send) +
+              ',assistant=' + assistantContainers().length +
+              ',blocks=' + candidateBlocks().length
+            );
           };
 
           window.__gptAndroidUseSetBridgeEnabled = function(value) {
@@ -351,7 +455,9 @@ class WebAdbBridge(
           });
 
           window.__gptAndroidUseBridgeInstalled = true;
+          nativeStatus('PAGE_INJECTED', location.pathname);
           window.__gptAndroidUseSetBridgeEnabled(true);
+          setTimeout(window.__gptAndroidUseSelfCheck, 250);
         })();
     """.trimIndent()
 

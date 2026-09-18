@@ -26,13 +26,16 @@
         android:paddingTop="4dp"
         android:paddingBottom="2dp"
         android:text="Bridge: OFF"
+        android:textIsSelectable="true"
         android:textSize="12sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="4dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingTop="2dp">
 
         <Button
             android:id="@+id/bridgeToggleButton"
@@ -40,6 +43,22 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="Bridge OFF" />
+
+        <Button
+            android:id="@+id/bridgeTestButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Test Bridge" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="4dp">
 
         <Button
             android:id="@+id/adbSetupButton"

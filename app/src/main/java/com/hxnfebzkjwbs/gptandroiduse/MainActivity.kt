@@ -24,7 +24,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageAdbBridge: WebAdbBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var bridgeEnabled = false
-    private var bridgeBootstrapped = false
     private var pendingBridgeBootstrap = false
 
     private val fileChooserLauncher =
@@ -58,14 +57,25 @@ class MainActivity : AppCompatActivity() {
             if (bridgeEnabled) {
                 binding.bridgeToggleButton.text = "Bridge ON"
                 binding.bridgeStatusText.text = "Bridge: ON · waiting for ADB_EXEC"
-                if (!bridgeBootstrapped) {
-                    pendingBridgeBootstrap = true
-                    tryBootstrapBridgeConversation(binding.chatWebView.url)
-                }
+                pendingBridgeBootstrap = true
+                tryBootstrapBridgeConversation(binding.chatWebView.url)
             } else {
                 pendingBridgeBootstrap = false
                 binding.bridgeToggleButton.text = "Bridge OFF"
                 binding.bridgeStatusText.text = "Bridge: OFF"
+            }
+        }
+
+        binding.bridgeTestButton.setOnClickListener {
+            if (!bridgeEnabled) {
+                binding.bridgeStatusText.text = "Bridge test: turn Bridge ON first"
+            } else {
+                binding.bridgeStatusText.text = "Bridge test: starting…"
+                pageAdbBridge.installForCurrentPage()
+                binding.chatWebView.postDelayed({
+                    pageAdbBridge.runSelfTest()
+                    pageAdbBridge.bootstrapConversation()
+                }, 350)
             }
         }
 
@@ -220,7 +230,6 @@ class MainActivity : AppCompatActivity() {
             if (bridgeEnabled && pendingBridgeBootstrap) {
                 pageAdbBridge.bootstrapConversation()
                 pendingBridgeBootstrap = false
-                bridgeBootstrapped = true
             }
         }, 600)
     }
