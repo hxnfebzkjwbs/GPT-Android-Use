@@ -28,17 +28,30 @@
             android:layout_marginTop="12dp" />
 
         <Button
-            android:id="@+id/openWirelessDebuggingButton"
+            android:id="@+id/startPairingAssistantButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="Open wireless debugging" />
+            android:layout_marginTop="20dp"
+            android:text="1. Start Shizuku-style pairing" />
+
+        <Button
+            android:id="@+id/discoverConnectButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="2. Discover & connect" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Advanced fallback"
+            android:textStyle="bold" />
 
         <EditText
             android:id="@+id/hostInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Wireless debugging IP, e.g. 172.19.0.1"
+            android:hint="Host, e.g. 172.19.0.1 or 127.0.0.1"
             android:inputType="textUri"
             android:singleLine="true" />
 
@@ -46,7 +59,7 @@
             android:id="@+id/pairingPortInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Pairing port (requires 6-digit code)"
+            android:hint="Pairing port"
             android:inputType="number" />
 
         <EditText
@@ -58,29 +71,23 @@
             android:maxLength="6" />
 
         <Button
-            android:id="@+id/pairButton"
+            android:id="@+id/manualPairButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Pair this phone" />
+            android:text="Manual pair" />
 
         <EditText
             android:id="@+id/connectionPortInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Connection port (Wireless debugging main page)"
+            android:hint="Connection port"
             android:inputType="number" />
 
         <Button
-            android:id="@+id/connectManualButton"
+            android:id="@+id/manualConnectButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Connect using address and port" />
-
-        <Button
-            android:id="@+id/connectAutoButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Auto-discover connection port (mDNS)" />
+            android:text="Manual connect" />
 
         <EditText
             android:id="@+id/commandInput"
