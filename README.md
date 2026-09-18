@@ -2,33 +2,38 @@
 
 Android app that combines an embedded ChatGPT web experience with a local Wireless ADB bridge.
 
-## Version 0.4.2
+## Version 0.4.3
 
-Version 0.4.2 introduces a fixed development signing certificate for GitHub Actions builds.
+GitHub Actions now produces the release APK with a private signing key stored only in repository Actions Secrets.
 
-Certificate SHA-256:
+Current release signing certificate SHA-256:
 
 ```text
-0D:41:FD:1E:54:BF:E4:08:0C:94:25:5F:FA:76:9A:37:1B:4F:40:9B:A9:4A:EC:6A:E7:9C:FC:31:69:AB:20:11
+21:D0:60:A5:3A:5D:9F:81:06:65:D4:C2:A8:F2:0C:D4:18:B4:8B:23:7D:AD:CC:A3:35:70:40:9E:78:44:39:25
 ```
 
-From 0.4.2 onward, GitHub Actions restores the same development keystore before every build and verifies the APK signer before uploading the artifact. Future APKs can therefore update an installed 0.4.2+ build with:
+The workflow reads these repository secrets:
+
+```text
+ANDROID_KEYSTORE_BASE64
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+```
+
+Pull-request builds compile an unsigned release APK and do not receive the signing material. Main-branch builds restore the PKCS#12 keystore, sign the release APK, verify the certificate fingerprint, and upload the private-signed artifact.
+
+### Signing migration
+
+Version 0.4.2 used the previous public development certificate. Version 0.4.3 uses the new private release certificate, so Android treats this as a signer change. Install 0.4.3 after uninstalling the old signer once.
+
+After 0.4.3 is installed, future builds that use the same private key and a higher `versionCode` can update it with:
 
 ```bash
-adb install -r GPT-Android-Use-debug.apk
+adb install -r GPT-Android-Use.apk
 ```
 
-### One-time migration
-
-Versions 0.4.1 and earlier were signed by temporary GitHub-hosted runner debug keys. Android will not allow 0.4.2 to replace those builds in place.
-
-Uninstall the old build once, install 0.4.2, and later fixed-signed versions can update it without uninstalling.
-
-### Development-key warning
-
-The fixed key is intentionally stored in this public repository because the current GitHub integration cannot create Actions Secrets. This makes builds reproducible for personal/test sideloading, but anyone can obtain the development key.
-
-Do not use this key for Play Store or security-sensitive production distribution. A production release should use a private release key stored in GitHub Actions Secrets.
+Keep the private PKCS#12 keystore and its passwords backed up. Losing the private key means losing the ability to issue ordinary in-place updates for installations signed by it.
 
 ## Embedded ChatGPT
 
@@ -51,10 +56,12 @@ The ADB screen uses the Shizuku-style workflow:
 
 ## Build
 
-GitHub Actions builds the debug APK:
+Pull requests:
 
 ```bash
-gradle assembleDebug
+gradle assembleRelease
 ```
+
+Main-branch GitHub Actions builds then sign the release APK with the repository Secrets.
 
 Minimum Android version: Android 11 (API 30).
