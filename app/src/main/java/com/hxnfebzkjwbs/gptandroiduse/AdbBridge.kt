@@ -176,7 +176,8 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     override fun observeUi(): Result<String> = runCatching {
         lastStage = "ui_observe"
         runShellUnchecked("uiautomator dump " + UI_DUMP_PATH)
-        val xml = runShellUnchecked("cat " + UI_DUMP_PATH)
+        val raw = runShellUnchecked("cat " + UI_DUMP_PATH)
+        val xml = extractHierarchyXml(raw)
         val summary = summarizeUiXml(xml)
         lastStage = "ui_observe_ok"
         lastError = "none"
@@ -299,14 +300,62 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                     output.append(line).append('\n')
                 }
 
-                return output.toString()
-                    .trimEnd('\n', '\r')
-                    .ifBlank { "(command completed with no output)" }
+                return cleanInteractiveShellOutput(
+                    output.toString(),
+                    command.trim(),
+                    marker
+                ).ifBlank { "(command completed with no output)" }
             } catch (t: Throwable) {
                 invalidateBrokenSession()
                 throw t
             }
         }
+    }
+
+    private fun cleanInteractiveShellOutput(
+        raw: String,
+        command: String,
+        marker: String
+    ): String {
+        val normalized = raw
+            .replace("\r", "")
+            .replace("\u0008", "")
+
+        val promptPattern = Regex("^[^\\n]*[#$]\\s*")
+        val markerCommandToken = "printf '\\n" + marker
+
+        return normalized
+            .lineSequence()
+            .map { it.trimEnd() }
+            .filterNot { line ->
+                val trimmed = line.trim()
+                trimmed == command ||
+                    trimmed.endsWith("$ " + command) ||
+                    trimmed.endsWith("# " + command) ||
+                    trimmed.contains(markerCommandToken) ||
+                    trimmed.matches(Regex("^[^\\n]*[#$]\\s*$"))
+            }
+            .joinToString("\n")
+            .trim()
+    }
+
+    private fun extractHierarchyXml(raw: String): String {
+        val start = raw.indexOf("<hierarchy")
+        val endTag = "</hierarchy>"
+        val end = raw.lastIndexOf(endTag)
+
+        if (start < 0 || end < start) {
+            val preview = raw
+                .replace("\r", "")
+                .replace("\u0008", "")
+                .take(1200)
+            throw IllegalStateException(
+                "UI dump did not contain a complete <hierarchy> XML document. Raw preview: " +
+                    preview
+            )
+        }
+
+        return raw.substring(start, end + endTag.length)
     }
 
     private fun summarizeUiXml(xml: String): String {

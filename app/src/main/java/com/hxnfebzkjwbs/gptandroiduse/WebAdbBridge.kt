@@ -415,7 +415,9 @@ class WebAdbBridge(
             'The first line inside the block must be ADB_EXEC. Put exactly ONE adb shell command on the next line, ' +
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
-            'For UI automation, use uiautomator dump when you need to inspect the current screen. ' +
+            'For UI automation, use exactly "uiautomator dump" when you need to inspect the current screen. ' +
+            'Do not cat UI XML files, do not choose your own dump path, and do not use shell redirection such as > /dev/null; ' +
+            'the native bridge handles the dump file and returns UI_SNAPSHOT itself. ' +
             'UI-changing commands may also return a UI_SNAPSHOT automatically; use its text, resource ids, clickable flags and bounds. ' +
             'Do not add prose outside the block. If no device action is needed, answer normally.';
 
@@ -1086,7 +1088,8 @@ class WebAdbBridge(
               output + '\n\n' +
               'The device command has finished. Inspect this result before deciding the next action. ' +
               'If the original request still needs device work, issue exactly ONE next ADB_EXEC command; ' +
-              'do not batch multiple commands. Otherwise answer normally.';
+              'do not batch multiple commands. For screen inspection, use only "uiautomator dump"; never cat dump files or add shell redirection. ' +
+              'Otherwise answer normally.';
 
             enqueueInternalMessage(
               'result:' + id,
