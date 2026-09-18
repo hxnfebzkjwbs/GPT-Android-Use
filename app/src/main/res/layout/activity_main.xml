@@ -38,7 +38,7 @@
             android:id="@+id/discoverConnectButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="2. Discover & connect" />
+            android:text="2. Discover &amp; connect" />
 
         <TextView
             android:layout_width="match_parent"
