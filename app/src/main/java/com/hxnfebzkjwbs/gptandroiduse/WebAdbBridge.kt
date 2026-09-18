@@ -120,7 +120,13 @@ class WebAdbBridge(
                     .trim()
                 postStatus("Bridge test: ADB OK · dev_settings=$value")
             } catch (t: Throwable) {
-                postStatus("Bridge test: ADB ERROR · " + (t.message ?: t.javaClass.simpleName))
+                val report = buildFailureReport(
+                    requestId = "bridge-test",
+                    phase = "bridge_test",
+                    command = "settings get global development_settings_enabled",
+                    throwable = t
+                )
+                postStatus("Bridge test: ADB ERROR · " + report.take(220))
             }
         }
     }
@@ -150,6 +156,8 @@ class WebAdbBridge(
         postStatus("Bridge: Native received ADB_EXEC")
 
         executor.execute {
+            var failurePhase = "parse"
+            var activeCommand = ""
             try {
                 val commands = parseCommands(payload)
                 if (commands.isEmpty()) {
@@ -177,11 +185,14 @@ class WebAdbBridge(
                     }
                 }
 
+                failurePhase = "adb_prepare"
                 postStatus("Bridge: connecting ADB…")
                 ensureAdbReady().getOrThrow()
 
                 val output = buildString {
                     commands.forEachIndexed { index, command ->
+                        activeCommand = command
+                        failurePhase = "command_execute_" + (index + 1)
                         postStatus("Bridge: executing ${index + 1}/${commands.size}")
                         append("[")
                         append(index + 1)
@@ -197,9 +208,15 @@ class WebAdbBridge(
                 postStatus("Bridge: ready")
                 postResult(requestId, true, output)
             } catch (t: Throwable) {
+                val report = buildFailureReport(
+                    requestId = requestId,
+                    phase = failurePhase,
+                    command = activeCommand,
+                    throwable = t
+                )
                 adb.disconnect()
-                postStatus("Bridge: error")
-                postResult(requestId, false, t.message ?: t.javaClass.simpleName)
+                postStatus("Bridge: error · " + (t.message ?: t.javaClass.simpleName))
+                postResult(requestId, false, report)
             } finally {
                 inFlight.remove(requestId)
                 completedRequestIds.add(requestId)
@@ -251,6 +268,42 @@ class WebAdbBridge(
         enabled = false
         executor.shutdownNow()
         adb.disconnect()
+    }
+
+    private fun buildFailureReport(
+        requestId: String,
+        phase: String,
+        command: String,
+        throwable: Throwable
+    ): String {
+        return buildString {
+            appendLine("ADB bridge failure diagnostics")
+            appendLine("request_id: " + requestId)
+            appendLine("phase: " + phase)
+            appendLine("failed_command: " + command.ifBlank { "(none)" })
+            appendLine("exception_chain: " + throwableChain(throwable))
+            appendLine()
+            appendLine("connection_state:")
+            append(adb.diagnostics())
+            appendLine()
+            appendLine()
+            append("Do not retry the same device command automatically. ")
+            append("Use these diagnostics to determine the failure cause before issuing another ADB_EXEC.")
+        }.take(MAX_RESULT_CHARS)
+    }
+
+    private fun throwableChain(throwable: Throwable): String {
+        val parts = mutableListOf<String>()
+        var current: Throwable? = throwable
+        var depth = 0
+        while (current != null && depth < 6) {
+            val name = current.javaClass.simpleName.ifBlank { current.javaClass.name }
+            val message = current.message?.take(500).orEmpty()
+            parts += if (message.isBlank()) name else name + ": " + message
+            current = current.cause
+            depth += 1
+        }
+        return parts.joinToString(" <- ")
     }
 
     private fun parseCommands(payload: String): List<String> {

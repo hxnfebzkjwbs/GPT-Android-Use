@@ -23,9 +23,17 @@ interface AdbBridge {
     fun enableWirelessDebugging(): Result<Unit>
     fun isWifiConnected(): Boolean
     fun disconnect()
+    fun diagnostics(): String
 }
 
 class AndroidAdbBridge(private val context: Context) : AdbBridge {
+    @Volatile private var lastEndpoint = "none"
+    @Volatile private var lastStage = "init"
+    @Volatile private var lastError = "none"
+    @Volatile private var lastCommand = "none"
+    @Volatile private var lastConnectSuccessAt = 0L
+    @Volatile private var lastProbeSuccessAt = 0L
+
     private fun manager(): AbsAdbConnectionManager =
         AdbConnectionManager.getInstance(context)
 
@@ -36,39 +44,81 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         check(manager().pair(host.trim(), port, pairingCode)) { "ADB pairing failed" }
     }
 
-    override fun connect(host: String, port: Int): Result<Unit> = runCatching {
-        require(host.isNotBlank()) { "Wireless debugging host is required" }
-        require(port in 1..65535) { "Invalid connection port" }
-        val manager = manager()
-        if (!manager.isConnected) {
-            check(manager.connect(host.trim(), port)) { "ADB connection failed" }
+    override fun connect(host: String, port: Int): Result<Unit> {
+        lastEndpoint = host.trim() + ":" + port
+        lastStage = "manual_connect"
+        val result = runCatching {
+            require(host.isNotBlank()) { "Wireless debugging host is required" }
+            require(port in 1..65535) { "Invalid connection port" }
+            val manager = manager()
+            if (!manager.isConnected) {
+                check(manager.connect(host.trim(), port)) { "ADB connection failed" }
+            }
+            lastConnectSuccessAt = System.currentTimeMillis()
+            lastStage = "connected"
+            lastError = "none"
         }
+        recordFailure("manual_connect", result.exceptionOrNull())
+        return result
     }
 
-    override fun autoConnect(): Result<Unit> = runCatching {
-        val manager = manager()
-        if (manager.isConnected) return@runCatching
+    override fun autoConnect(): Result<Unit> {
+        lastStage = "tls_discovery"
+        val result = runCatching {
+            val manager = manager()
+            if (manager.isConnected) {
+                lastStage = "manager_already_connected"
+                return@runCatching
+            }
 
-        val endpoint = ShizukuStyleAdbDiscovery.discoverEndpointBlocking(
-            context,
-            ShizukuStyleAdbDiscovery.TLS_CONNECT,
-            AUTO_CONNECT_TIMEOUT_MS
-        ).getOrThrow()
+            val endpoint = ShizukuStyleAdbDiscovery.discoverEndpointBlocking(
+                context,
+                ShizukuStyleAdbDiscovery.TLS_CONNECT,
+                AUTO_CONNECT_TIMEOUT_MS
+            ).getOrThrow()
 
-        check(manager.connect(endpoint.host, endpoint.port)) {
-            "Wireless ADB TLS connection failed at ${endpoint.host}:${endpoint.port}"
+            lastEndpoint = endpoint.host + ":" + endpoint.port
+            lastStage = "tls_connect"
+            check(manager.connect(endpoint.host, endpoint.port)) {
+                "Wireless ADB TLS connection failed at " + endpoint.host + ":" + endpoint.port
+            }
+            lastConnectSuccessAt = System.currentTimeMillis()
+            lastStage = "connected"
+            lastError = "none"
         }
+        recordFailure(lastStage, result.exceptionOrNull())
+        return result
     }
 
-    override fun execute(command: String): Result<String> = runCatching {
-        val policy = CommandPolicy.validate(command)
-        require(policy.allowed) { policy.reason }
-        runShellUnchecked(command.trim())
+    override fun execute(command: String): Result<String> {
+        lastCommand = command.trim()
+        lastStage = "shell_execute"
+        val result = runCatching {
+            val policy = CommandPolicy.validate(command)
+            require(policy.allowed) { policy.reason }
+            runShellUnchecked(command.trim())
+        }
+        recordFailure("shell_execute", result.exceptionOrNull())
+        if (result.isSuccess) {
+            lastStage = "shell_complete"
+            lastError = "none"
+        }
+        return result
     }
 
-    override fun probe(): Result<Unit> = runCatching {
-        runShellUnchecked(PROBE_COMMAND)
-        Unit
+    override fun probe(): Result<Unit> {
+        lastStage = "probe"
+        val result = runCatching {
+            runShellUnchecked(PROBE_COMMAND)
+            lastProbeSuccessAt = System.currentTimeMillis()
+            Unit
+        }
+        recordFailure("probe", result.exceptionOrNull())
+        if (result.isSuccess) {
+            lastStage = "probe_ok"
+            lastError = "none"
+        }
+        return result
     }
 
     override fun isConnected(): Boolean =
@@ -107,8 +157,51 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun disconnect() {
+        lastStage = "disconnect"
         runCatching { manager().disconnect() }
     }
+
+    override fun diagnostics(): String {
+        val now = System.currentTimeMillis()
+        val connectAge = ageMillis(now, lastConnectSuccessAt)
+        val probeAge = ageMillis(now, lastProbeSuccessAt)
+        return buildString {
+            appendLine("stage: " + lastStage)
+            appendLine("endpoint: " + lastEndpoint)
+            appendLine("manager_is_connected: " + isConnected())
+            appendLine("wireless_debugging_enabled: " + isWirelessDebuggingEnabled())
+            appendLine("wifi_connected: " + isWifiConnected())
+            appendLine("self_heal_enabled: " + AdbSelfHeal.isEnabled(context))
+            appendLine("self_heal_permission: " + hasSelfHealPermission())
+            appendLine("last_connect_success_ms_ago: " + connectAge)
+            appendLine("last_probe_success_ms_ago: " + probeAge)
+            appendLine("last_command: " + lastCommand)
+            append("last_error: " + lastError)
+        }
+    }
+
+    private fun recordFailure(stage: String, throwable: Throwable?) {
+        if (throwable == null) return
+        lastStage = stage
+        lastError = throwableChain(throwable)
+    }
+
+    private fun throwableChain(throwable: Throwable): String {
+        val parts = mutableListOf<String>()
+        var current: Throwable? = throwable
+        var depth = 0
+        while (current != null && depth < 6) {
+            val name = current.javaClass.simpleName.ifBlank { current.javaClass.name }
+            val message = current.message?.take(400).orEmpty()
+            parts += if (message.isBlank()) name else name + ": " + message
+            current = current.cause
+            depth += 1
+        }
+        return parts.joinToString(" <- ")
+    }
+
+    private fun ageMillis(now: Long, timestamp: Long): String =
+        if (timestamp <= 0L) "never" else (now - timestamp).coerceAtLeast(0L).toString()
 
     private fun runShellUnchecked(command: String): String {
         val stream = manager().openStream("shell:" + command.trim())
