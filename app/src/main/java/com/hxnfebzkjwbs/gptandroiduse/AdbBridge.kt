@@ -7,8 +7,13 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
+import io.github.muntashirakon.adb.AdbStream
+import io.github.muntashirakon.adb.LocalServices
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.OutputStream
+import java.nio.charset.StandardCharsets
+import java.util.UUID
 
 interface AdbBridge {
     fun pair(host: String, port: Int, pairingCode: String): Result<Unit>
@@ -33,6 +38,11 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     @Volatile private var lastCommand = "none"
     @Volatile private var lastConnectSuccessAt = 0L
     @Volatile private var lastProbeSuccessAt = 0L
+
+    private val shellLock = Any()
+    private var shellStream: AdbStream? = null
+    private var shellReader: BufferedReader? = null
+    private var shellWriter: OutputStream? = null
 
     private fun manager(): AbsAdbConnectionManager =
         AdbConnectionManager.getInstance(context)
@@ -158,17 +168,24 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
     override fun disconnect() {
         lastStage = "disconnect"
-        runCatching { manager().disconnect() }
+        synchronized(shellLock) {
+            closeShellLocked()
+            runCatching { manager().disconnect() }
+        }
     }
 
     override fun diagnostics(): String {
         val now = System.currentTimeMillis()
         val connectAge = ageMillis(now, lastConnectSuccessAt)
         val probeAge = ageMillis(now, lastProbeSuccessAt)
+        val shellOpen = synchronized(shellLock) {
+            shellStream?.isClosed == false
+        }
         return buildString {
             appendLine("stage: " + lastStage)
             appendLine("endpoint: " + lastEndpoint)
             appendLine("manager_is_connected: " + isConnected())
+            appendLine("persistent_shell_open: " + shellOpen)
             appendLine("wireless_debugging_enabled: " + isWirelessDebuggingEnabled())
             appendLine("wifi_connected: " + isWifiConnected())
             appendLine("self_heal_enabled: " + AdbSelfHeal.isEnabled(context))
@@ -203,21 +220,73 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     private fun ageMillis(now: Long, timestamp: Long): String =
         if (timestamp <= 0L) "never" else (now - timestamp).coerceAtLeast(0L).toString()
 
+    private fun ensurePersistentShellLocked() {
+        val current = shellStream
+        if (current != null && !current.isClosed && shellReader != null && shellWriter != null) {
+            return
+        }
+
+        check(manager().isConnected) { "ADB transport is not connected" }
+        closeShellLocked()
+
+        val stream = manager().openStream(LocalServices.SHELL)
+        shellStream = stream
+        shellReader = BufferedReader(InputStreamReader(stream.openInputStream()))
+        shellWriter = stream.openOutputStream()
+        lastStage = "shell_session_open"
+    }
+
+    private fun closeShellLocked() {
+        runCatching { shellStream?.close() }
+        shellReader = null
+        shellWriter = null
+        shellStream = null
+    }
+
+    private fun invalidateBrokenSession() {
+        synchronized(shellLock) {
+            closeShellLocked()
+            runCatching { manager().disconnect() }
+        }
+    }
+
     private fun runShellUnchecked(command: String): String {
-        val stream = manager().openStream("shell:" + command.trim())
-        try {
-            BufferedReader(InputStreamReader(stream.openInputStream())).use { reader ->
+        synchronized(shellLock) {
+            try {
+                ensurePersistentShellLocked()
+
+                val reader = checkNotNull(shellReader) { "ADB shell reader is unavailable" }
+                val writer = checkNotNull(shellWriter) { "ADB shell writer is unavailable" }
+                val marker = "__GPT_ANDROID_USE_DONE_" +
+                    UUID.randomUUID().toString().replace("-", "") + "__"
+
+                writer.write(command.trim().toByteArray(StandardCharsets.UTF_8))
+                writer.write("\n".toByteArray(StandardCharsets.UTF_8))
+                writer.write(
+                    ("printf '\\n" + marker + ":%s\\n' \"\$?\"\n")
+                        .toByteArray(StandardCharsets.UTF_8)
+                )
+                writer.flush()
+
                 val output = StringBuilder()
-                val buffer = CharArray(4096)
                 while (true) {
-                    val count = reader.read(buffer)
-                    if (count < 0) break
-                    output.append(buffer, 0, count)
+                    val line = reader.readLine()
+                        ?: throw java.io.IOException(
+                            "Persistent ADB shell closed before completion marker"
+                        )
+                    if (line.startsWith(marker + ":")) {
+                        break
+                    }
+                    output.append(line).append('\n')
                 }
-                return output.toString().ifBlank { "(command completed with no output)" }
+
+                return output.toString()
+                    .trimEnd('\n', '\r')
+                    .ifBlank { "(command completed with no output)" }
+            } catch (t: Throwable) {
+                invalidateBrokenSession()
+                throw t
             }
-        } finally {
-            stream.close()
         }
     }
 

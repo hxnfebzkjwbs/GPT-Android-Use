@@ -214,7 +214,6 @@ class WebAdbBridge(
                     command = activeCommand,
                     throwable = t
                 )
-                adb.disconnect()
                 postStatus("Bridge: error · " + (t.message ?: t.javaClass.simpleName))
                 postResult(requestId, false, report)
             } finally {
@@ -228,15 +227,14 @@ class WebAdbBridge(
         if (adb.isConnected()) {
             val probe = adb.probe()
             if (probe.isSuccess) return Result.success(Unit)
-            postStatus("Bridge: stale ADB session · reconnecting…")
-            adb.disconnect()
+            postStatus("Bridge: ADB session invalid · reconnecting…")
         }
 
         val reconnect = adb.autoConnect()
         if (reconnect.isSuccess) {
             val probe = adb.probe()
             if (probe.isSuccess) return Result.success(Unit)
-            adb.disconnect()
+            return probe
         }
 
         val canSelfHeal =
@@ -244,21 +242,13 @@ class WebAdbBridge(
             adb.hasSelfHealPermission() &&
             adb.isWifiConnected()
 
-        if (!canSelfHeal) {
-            return reconnect.exceptionOrNull()?.let { Result.failure(it) }
-                ?: Result.failure(IllegalStateException("ADB connection probe failed"))
-        }
-
-        if (adb.isWirelessDebuggingEnabled()) {
-            return reconnect.exceptionOrNull()?.let { Result.failure(it) }
-                ?: Result.failure(IllegalStateException("ADB connection probe failed"))
-        }
+        if (!canSelfHeal) return reconnect
+        if (adb.isWirelessDebuggingEnabled()) return reconnect
 
         return runCatching {
             postStatus("Bridge: re-enabling Wireless ADB…")
             adb.enableWirelessDebugging().getOrThrow()
             Thread.sleep(WIRELESS_ADB_RESTART_DELAY_MS)
-            adb.disconnect()
             adb.autoConnect().getOrThrow()
             adb.probe().getOrThrow()
         }
