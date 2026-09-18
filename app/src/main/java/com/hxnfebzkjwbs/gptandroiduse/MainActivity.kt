@@ -22,6 +22,7 @@ import com.hxnfebzkjwbs.gptandroiduse.databinding.ActivityMainBinding
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var externalGoogleAuthLaunched = false
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -50,7 +51,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.openBrowserButton.setOnClickListener {
             val url = binding.chatWebView.url ?: CHATGPT_URL
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            openExternalBrowser(Uri.parse(url))
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -88,7 +89,9 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = false
         }
 
-        WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+        WebView.setWebContentsDebuggingEnabled(
+            (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        )
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -96,15 +99,29 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest
             ): Boolean {
                 val uri = request.url
+
+                if (isGoogleAuthenticationUri(uri)) {
+                    externalGoogleAuthLaunched = openExternalAuthBrowser(uri)
+                    return externalGoogleAuthLaunched
+                }
+
                 return when (uri.scheme?.lowercase()) {
                     "http", "https" -> false
                     else -> {
-                        runCatching {
-                            startActivity(Intent(Intent.ACTION_VIEW, uri))
-                        }
+                        openExternalBrowser(uri)
                         true
                     }
                 }
+            }
+
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                val uri = runCatching { Uri.parse(url) }.getOrNull()
+                if (uri != null && isGoogleAuthenticationUri(uri) && !externalGoogleAuthLaunched) {
+                    view.stopLoading()
+                    externalGoogleAuthLaunched = openExternalAuthBrowser(uri)
+                    return
+                }
+                super.onPageStarted(view, url, favicon)
             }
         }
 
@@ -157,8 +174,75 @@ class MainActivity : AppCompatActivity() {
                     )
                 getSystemService(DownloadManager::class.java).enqueue(request)
             }.onFailure {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                openExternalBrowser(Uri.parse(url))
             }
+        }
+    }
+
+    private fun isGoogleAuthenticationUri(uri: Uri): Boolean {
+        val host = uri.host?.lowercase().orEmpty()
+        val full = uri.toString().lowercase()
+
+        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) {
+            return true
+        }
+
+        if (host == "oauth2.googleapis.com" || host.endsWith(".googleusercontent.com")) {
+            return true
+        }
+
+        return full.contains("google-oauth2") ||
+            full.contains("connection=google") ||
+            full.contains("provider=google") ||
+            full.contains("authprovider=google") ||
+            full.contains("identity_provider=google")
+    }
+
+    private fun openExternalAuthBrowser(uri: Uri): Boolean {
+        val preferredPackages = listOf(
+            CHROME_PACKAGE,
+            BRAVE_PACKAGE
+        )
+
+        for (packageName in preferredPackages) {
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                setPackage(packageName)
+            }
+            if (intent.resolveActivity(packageManager) != null) {
+                startActivity(intent)
+                return true
+            }
+        }
+
+        return runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, uri).apply {
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                }
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun openExternalBrowser(uri: Uri) {
+        runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, uri).apply {
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                }
+            )
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (externalGoogleAuthLaunched) {
+            externalGoogleAuthLaunched = false
+            binding.chatWebView.postDelayed(
+                { binding.chatWebView.loadUrl(CHATGPT_URL) },
+                500
+            )
         }
     }
 
@@ -178,5 +262,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val CHATGPT_URL = "https://chatgpt.com/"
+        private const val CHROME_PACKAGE = "com.android.chrome"
+        private const val BRAVE_PACKAGE = "com.brave.browser"
     }
 }
