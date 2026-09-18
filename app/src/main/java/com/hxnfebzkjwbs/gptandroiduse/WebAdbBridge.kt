@@ -216,11 +216,17 @@ class WebAdbBridge(
 
         try {
             if (adb.isConnected()) {
-                if (watchdogFailures > 0) {
-                    postStatus("Bridge: ADB online")
+                val heartbeat = adb.execute("settings get global adb_wifi_enabled")
+                if (heartbeat.isSuccess) {
+                    if (watchdogFailures > 0) {
+                        postStatus("Bridge: ADB online")
+                    }
+                    watchdogFailures = 0
+                    return
                 }
-                watchdogFailures = 0
-                return
+
+                postStatus("Bridge: stale ADB session · reconnecting…")
+                adb.disconnect()
             }
 
             if (AdbSelfHeal.isEnabled(appContext) &&
