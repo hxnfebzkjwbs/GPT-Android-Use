@@ -40,6 +40,12 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         supportActionBar?.hide()
 
+        @Suppress("DEPRECATION")
+        val versionName = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull().orEmpty()
+        binding.versionText.text = if (versionName.isBlank()) "v?" else "v$versionName"
+
         pageAdbBridge = WebAdbBridge(
             applicationContext,
             binding.chatWebView
