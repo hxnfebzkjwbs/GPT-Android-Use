@@ -139,7 +139,6 @@ class AdbSetupActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        adb.disconnect()
         executor.shutdownNow()
         super.onDestroy()
     }
