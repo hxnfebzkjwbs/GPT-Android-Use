@@ -228,11 +228,27 @@ class WebAdbBridge(
                 failurePhase = "command_execute_1"
                 postStatus("Bridge: executing 1/1")
                 val result = adb.execute(command, userApproved).getOrThrow()
+                val observeAfter = shouldObserveAfter(command)
+                val uiSnapshot = if (observeAfter) {
+                    postStatus("Bridge: observing UI")
+                    adb.observeUi().getOrElse {
+                        "UI_SNAPSHOT_ERROR: " + (it.message ?: it.javaClass.simpleName)
+                    }
+                } else {
+                    ""
+                }
+
                 val output = buildString {
                     append("[1] $ ")
                     append(command)
                     append("\n")
                     append(result.take(MAX_SINGLE_RESULT_CHARS))
+                    if (uiSnapshot.isNotBlank() &&
+                        !result.startsWith("UI_SNAPSHOT")
+                    ) {
+                        append("\n\n")
+                        append(uiSnapshot)
+                    }
                 }.take(MAX_RESULT_CHARS)
 
                 postStatus("Bridge: ready")
@@ -288,6 +304,13 @@ class WebAdbBridge(
         enabled = false
         executor.shutdownNow()
         adb.disconnect()
+    }
+
+    private fun shouldObserveAfter(command: String): Boolean {
+        val normalized = command.trim().replace(Regex("\\s+"), " ").lowercase()
+        return normalized.startsWith("input ") ||
+            normalized.startsWith("am start ") ||
+            normalized.startsWith("monkey ")
     }
 
     private fun requestApprovalBlocking(command: String, reason: String): Boolean {
@@ -392,6 +415,8 @@ class WebAdbBridge(
             'The first line inside the block must be ADB_EXEC. Put exactly ONE adb shell command on the next line, ' +
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
+            'For UI automation, use uiautomator dump when you need to inspect the current screen. ' +
+            'UI-changing commands may also return a UI_SNAPSHOT automatically; use its text, resource ids, clickable flags and bounds. ' +
             'Do not add prose outside the block. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';

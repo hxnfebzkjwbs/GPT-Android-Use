@@ -14,6 +14,8 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 
 interface AdbBridge {
     fun pair(host: String, port: Int, pairingCode: String): Result<Unit>
@@ -29,6 +31,7 @@ interface AdbBridge {
     fun isWifiConnected(): Boolean
     fun disconnect()
     fun diagnostics(): String
+    fun observeUi(): Result<String>
 }
 
 class AndroidAdbBridge(private val context: Context) : AdbBridge {
@@ -106,7 +109,11 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         val result = runCatching {
             val policy = CommandPolicy.validate(command)
             require(policy.canExecute(userApproved)) { policy.reason }
-            runShellUnchecked(command.trim())
+            if (command.trim().startsWith("uiautomator dump", ignoreCase = true)) {
+                observeUi().getOrThrow()
+            } else {
+                runShellUnchecked(command.trim())
+            }
         }
         recordFailure("shell_execute", result.exceptionOrNull())
         if (result.isSuccess) {
@@ -164,6 +171,18 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             cm.getNetworkCapabilities(network)
                 ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
         }
+    }
+
+    override fun observeUi(): Result<String> = runCatching {
+        lastStage = "ui_observe"
+        runShellUnchecked("uiautomator dump " + UI_DUMP_PATH)
+        val xml = runShellUnchecked("cat " + UI_DUMP_PATH)
+        val summary = summarizeUiXml(xml)
+        lastStage = "ui_observe_ok"
+        lastError = "none"
+        summary
+    }.onFailure {
+        recordFailure("ui_observe", it)
     }
 
     override fun disconnect() {
@@ -290,9 +309,79 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }
     }
 
+    private fun summarizeUiXml(xml: String): String {
+        val parser = XmlPullParserFactory.newInstance().newPullParser()
+        parser.setInput(xml.reader())
+
+        val lines = ArrayList<String>()
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT && lines.size < MAX_UI_NODES) {
+            if (event == XmlPullParser.START_TAG && parser.name == "node") {
+                fun attr(name: String): String =
+                    parser.getAttributeValue(null, name).orEmpty().trim()
+
+                val text = attr("text")
+                val desc = attr("content-desc")
+                val resourceId = attr("resource-id")
+                val className = attr("class")
+                val clickable = attr("clickable")
+                val enabled = attr("enabled")
+                val bounds = attr("bounds")
+                val selected = attr("selected")
+                val checked = attr("checked")
+
+                val meaningful =
+                    text.isNotBlank() ||
+                    desc.isNotBlank() ||
+                    resourceId.isNotBlank() ||
+                    clickable == "true"
+
+                if (meaningful) {
+                    val item = buildString {
+                        append("node")
+                        if (text.isNotBlank()) append(" text=").append(quoteUi(text))
+                        if (desc.isNotBlank()) append(" desc=").append(quoteUi(desc))
+                        if (resourceId.isNotBlank()) append(" id=").append(resourceId)
+                        if (className.isNotBlank()) append(" class=").append(className.substringAfterLast('.'))
+                        if (clickable.isNotBlank()) append(" clickable=").append(clickable)
+                        if (enabled.isNotBlank()) append(" enabled=").append(enabled)
+                        if (selected == "true") append(" selected=true")
+                        if (checked == "true") append(" checked=true")
+                        if (bounds.isNotBlank()) append(" bounds=").append(bounds)
+                    }
+                    lines += item.take(MAX_UI_LINE_CHARS)
+                }
+            }
+            event = parser.next()
+        }
+
+        return buildString {
+            appendLine("UI_SNAPSHOT")
+            appendLine("format: uiautomator-summary-v1")
+            appendLine("nodes: " + lines.size)
+            lines.forEach { appendLine(it) }
+            if (event != XmlPullParser.END_DOCUMENT) {
+                appendLine("truncated: true")
+            }
+        }.take(MAX_UI_RESULT_CHARS)
+    }
+
+    private fun quoteUi(value: String): String =
+        "\"" + value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", " ")
+            .replace("\r", " ")
+            .take(MAX_UI_TEXT_CHARS) + "\""
+
     companion object {
         private const val ADB_WIFI_ENABLED_KEY = "adb_wifi_enabled"
         private const val PROBE_COMMAND = "settings get global development_settings_enabled"
         private const val AUTO_CONNECT_TIMEOUT_MS = 5_000L
+        private const val UI_DUMP_PATH = "/sdcard/gpt_android_use_ui.xml"
+        private const val MAX_UI_NODES = 120
+        private const val MAX_UI_TEXT_CHARS = 160
+        private const val MAX_UI_LINE_CHARS = 420
+        private const val MAX_UI_RESULT_CHARS = 10_000
     }
 }
