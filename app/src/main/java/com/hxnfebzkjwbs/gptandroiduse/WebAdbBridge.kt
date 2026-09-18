@@ -34,16 +34,21 @@ class WebAdbBridge(
     fun setEnabled(value: Boolean) {
         enabled = value
         webView.post {
-            val js = if (value) {
-                installScript()
+            if (value) {
+                if (trustedTopPage) {
+                    webView.evaluateJavascript(installScript(), null)
+                }
             } else {
-                "window.__gptAndroidUseSetBridgeEnabled && window.__gptAndroidUseSetBridgeEnabled(false);"
+                webView.evaluateJavascript(
+                    "window.__gptAndroidUseSetBridgeEnabled && window.__gptAndroidUseSetBridgeEnabled(false);",
+                    null
+                )
             }
-            webView.evaluateJavascript(js, null)
         }
     }
 
     fun bootstrapConversation() {
+        if (!enabled || !trustedTopPage) return
         webView.post {
             webView.evaluateJavascript(
                 "window.__gptAndroidUseBridgeBootstrap && window.__gptAndroidUseBridgeBootstrap();",
