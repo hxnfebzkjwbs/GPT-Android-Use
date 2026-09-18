@@ -16,6 +16,7 @@ interface AdbBridge {
     fun connect(host: String, port: Int): Result<Unit>
     fun autoConnect(): Result<Unit>
     fun execute(command: String): Result<String>
+    fun probe(): Result<Unit>
     fun isConnected(): Boolean
     fun hasSelfHealPermission(): Boolean
     fun grantSelfHealPermission(): Result<Unit>
@@ -61,6 +62,11 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         val policy = CommandPolicy.validate(command)
         require(policy.allowed) { policy.reason }
         runShellUnchecked(command.trim())
+    }
+
+    override fun probe(): Result<Unit> = runCatching {
+        runShellUnchecked(PROBE_COMMAND)
+        Unit
     }
 
     override fun isConnected(): Boolean =
@@ -122,5 +128,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
     companion object {
         private const val ADB_WIFI_ENABLED_KEY = "adb_wifi_enabled"
+        private const val PROBE_COMMAND = "settings get global development_settings_enabled"
     }
 }

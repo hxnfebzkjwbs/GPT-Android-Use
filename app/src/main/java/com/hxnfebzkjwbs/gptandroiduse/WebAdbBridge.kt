@@ -82,12 +82,7 @@ class WebAdbBridge(
 
     fun checkAdbOnStartup() {
         executor.execute {
-            if (adb.isConnected()) {
-                postStatus("ADB: connected")
-                return@execute
-            }
-
-            postStatus("ADB: disconnected · reconnecting…")
+            postStatus("ADB: checking connection…")
             val result = ensureAdbReady()
             if (result.isSuccess) {
                 postStatus("ADB: connected")
@@ -119,7 +114,7 @@ class WebAdbBridge(
         executor.execute {
             try {
                 postStatus("Bridge test: connecting Wireless ADB…")
-                adb.autoConnect().getOrThrow()
+                ensureAdbReady().getOrThrow()
                 val value = adb.execute("settings get global development_settings_enabled")
                     .getOrThrow()
                     .trim()
@@ -213,16 +208,34 @@ class WebAdbBridge(
     }
 
     private fun ensureAdbReady(): Result<Unit> {
-        val firstAttempt = adb.autoConnect()
-        if (firstAttempt.isSuccess) return firstAttempt
+        if (adb.isConnected()) {
+            val probe = adb.probe()
+            if (probe.isSuccess) return Result.success(Unit)
+            postStatus("Bridge: stale ADB session · reconnecting…")
+            adb.disconnect()
+        }
+
+        val reconnect = adb.autoConnect()
+        if (reconnect.isSuccess) {
+            val probe = adb.probe()
+            if (probe.isSuccess) return Result.success(Unit)
+            adb.disconnect()
+        }
 
         val canSelfHeal =
             AdbSelfHeal.isEnabled(appContext) &&
             adb.hasSelfHealPermission() &&
             adb.isWifiConnected()
 
-        if (!canSelfHeal) return firstAttempt
-        if (adb.isWirelessDebuggingEnabled()) return firstAttempt
+        if (!canSelfHeal) {
+            return reconnect.exceptionOrNull()?.let { Result.failure(it) }
+                ?: Result.failure(IllegalStateException("ADB connection probe failed"))
+        }
+
+        if (adb.isWirelessDebuggingEnabled()) {
+            return reconnect.exceptionOrNull()?.let { Result.failure(it) }
+                ?: Result.failure(IllegalStateException("ADB connection probe failed"))
+        }
 
         return runCatching {
             postStatus("Bridge: re-enabling Wireless ADB…")
@@ -230,6 +243,7 @@ class WebAdbBridge(
             Thread.sleep(WIRELESS_ADB_RESTART_DELAY_MS)
             adb.disconnect()
             adb.autoConnect().getOrThrow()
+            adb.probe().getOrThrow()
         }
     }
 
