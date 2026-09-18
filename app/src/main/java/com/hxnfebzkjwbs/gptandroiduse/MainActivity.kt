@@ -2,6 +2,7 @@ package com.hxnfebzkjwbs.gptandroiduse
 
 import android.app.DownloadManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -87,7 +88,7 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = false
         }
 
-        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
