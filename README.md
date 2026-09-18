@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.5.2
+## Version 0.5.3
 
-Version 0.5.2 prevents a visible-but-stale ChatGPT Stop button from permanently blocking ADB execution.
+Version 0.5.3 includes the stable-streaming ADB execution fix from 0.5.2 and makes the visible version label reflect the actually installed APK version.
 
 ### Web ↔ ADB bridge
 
@@ -182,3 +182,8 @@ Diagnostic stages:
 
 - `ADB_EXEC_STABILIZING` — command text is being watched for changes
 - `ADB_EXEC_STABLE_STREAMING` — command stayed stable long enough and is being released for execution
+
+
+### 0.5.3 installed-version label
+
+The bottom version label is now populated from Android package metadata at runtime instead of being hard-coded, so it always matches the installed APK.
