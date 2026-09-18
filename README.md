@@ -2,19 +2,19 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.4.5
+## Version 0.4.6
 
-Version 0.4.5 connects the embedded ChatGPT page to the native Wireless ADB executor.
+Version 0.4.6 fixes the WebView bridge initialization path and adds diagnostics for the ChatGPT page and Wireless ADB.
 
 ### Web ↔ ADB bridge
 
-The main screen now has a **Bridge OFF / Bridge ON** toggle.
+The main screen has **Bridge OFF / Bridge ON** and **Test Bridge** controls.
 
 When Bridge is enabled:
 
 1. The app injects a page observer only while the top-level page is `chatgpt.com`.
 2. Existing conversation history is marked as already seen, so old ADB blocks are not replayed.
-3. The app sends one bridge-protocol message into the current ChatGPT conversation.
+3. The app sends one bridge-protocol message into the current ChatGPT conversation. Version 0.4.6 also supports the current `#composer-submit-button` and ProseMirror composer selectors.
 4. New assistant responses are watched for a fenced code block whose first line is exactly:
 
 ```text
@@ -33,7 +33,7 @@ input tap 500 1200
 input keyevent KEYCODE_BACK
 ```
 
-The bridge accepts at most 8 commands per block.
+The bridge accepts at most 8 commands per block. If initialization fails, turning Bridge off/on retries it instead of permanently marking the session initialized.
 
 Currently allowed command families:
 
@@ -105,3 +105,16 @@ adb install -r GPT-Android-Use.apk
 ```
 
 Minimum Android version: Android 11 (API 30).
+
+
+### Bridge diagnostics
+
+Tap **Test Bridge** while Bridge is ON. The status line reports stages such as:
+
+- `PAGE_INJECTED` — the JavaScript bridge is installed on chatgpt.com
+- `SELF_CHECK · editor=true,send=true` — ChatGPT composer and send controls were found
+- `COMPOSER_MISSING` / `SEND_BUTTON_MISSING` — the current page DOM no longer matches
+- `ADB_EXEC_FOUND` — a new assistant ADB block was detected
+- `Bridge test: ADB OK` — the native Wireless ADB connection successfully ran a read-only settings query
+
+**Test Bridge** also retries the bridge protocol message.
