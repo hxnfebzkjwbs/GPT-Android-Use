@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.4.9
+## Version 0.5.0
 
-Version 0.4.9 adds a one-tap ADB Run button so the end-to-end bridge can be exercised without typing a test request.
+Version 0.5.0 makes the one-tap ADB test unmistakable: it is a full-width Chinese button on its own row, and the app version is displayed on the main screen.
 
 ### Web ↔ ADB bridge
 
@@ -160,3 +160,8 @@ dumpsys battery
 The normal reply detector then executes the command and feeds the result back as `ADB_RESULT`.
 
 This button is intentionally fixed to a safe battery-status query; arbitrary device actions still come from normal chat requests.
+
+
+### 0.5.0 visible one-tap control
+
+The main screen now shows a full-width **一键ADB测试** button on its own row, plus a visible version label. If the button or version label is absent, the installed app is not 0.5.0.
