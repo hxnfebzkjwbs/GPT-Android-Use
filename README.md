@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.5.1
+## Version 0.5.2
 
-Version 0.5.1 keeps the full-width one-tap ADB button and adds a global rendered-code fallback so ADB_EXEC can be detected even when ChatGPT changes assistant container attributes.
+Version 0.5.2 prevents a visible-but-stale ChatGPT Stop button from permanently blocking ADB execution.
 
 ### Web ↔ ADB bridge
 
@@ -170,3 +170,15 @@ The main screen now shows a full-width **一键ADB测试** button on its own row
 ### 0.5.1 reply scan fallback
 
 The bridge now scans rendered `pre code`, `pre`, and `code` nodes across the ChatGPT page when stable assistant-role containers are unavailable. It explicitly excludes the prompt composer and user-message containers, and still marks existing blocks as seen before executing new ones.
+
+
+### 0.5.2 stable streaming execution
+
+If ChatGPT keeps a visible Stop control mounted after the `ADB_EXEC` code block has effectively finished, the bridge no longer waits forever.
+
+While a Stop control is visible, the bridge tracks the latest `ADB_EXEC` payload. If the payload keeps changing, execution is deferred. If the payload remains unchanged for about 2.2 seconds and contains at least one command line, the bridge executes it even if the Stop control is still visible.
+
+Diagnostic stages:
+
+- `ADB_EXEC_STABILIZING` — command text is being watched for changes
+- `ADB_EXEC_STABLE_STREAMING` — command stayed stable long enough and is being released for execution

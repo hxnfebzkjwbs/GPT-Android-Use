@@ -236,6 +236,10 @@ class WebAdbBridge(
           let enabled = true;
           let timer = null;
           let bypassNextSend = false;
+          let streamingCandidateKey = '';
+          let streamingCandidateSince = 0;
+          let streamingRecheckTimer = null;
+          const STREAMING_STABLE_MS = 2200;
           const seen = new Set();
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
@@ -410,6 +414,23 @@ class WebAdbBridge(
             }).filter(item => !!item.text);
           }
 
+          function resetStreamingCandidate() {
+            streamingCandidateKey = '';
+            streamingCandidateSince = 0;
+            if (streamingRecheckTimer) {
+              clearTimeout(streamingRecheckTimer);
+              streamingRecheckTimer = null;
+            }
+          }
+
+          function scheduleStreamingRecheck(delayMs) {
+            if (streamingRecheckTimer) clearTimeout(streamingRecheckTimer);
+            streamingRecheckTimer = setTimeout(() => {
+              streamingRecheckTimer = null;
+              scan(false);
+            }, Math.max(150, delayMs));
+          }
+
           function dispatchBlock(item, force) {
             const id = requestIdFor(item.code, item.text);
             if (!force && seen.has(id)) return false;
@@ -426,14 +447,12 @@ class WebAdbBridge(
 
           function scan(force) {
             if (!enabled) return;
-            const streaming = isStreaming();
-            if (streaming && !force) {
-              nativeStatus('SCAN_WAIT_STREAMING', 'visibleStop=' + stopButtons().filter(isVisible).length);
-              return;
-            }
 
             const matches = matchingBlocks();
+            const streaming = isStreaming();
+
             if (force) {
+              resetStreamingCandidate();
               const latest = matches.length ? matches[matches.length - 1] : null;
               if (!latest) {
                 nativeStatus('SCAN_NO_ADB_EXEC', 'blocks=' + candidateBlocks().length);
@@ -443,6 +462,53 @@ class WebAdbBridge(
               return;
             }
 
+            if (streaming) {
+              const latest = matches.length ? matches[matches.length - 1] : null;
+              const visibleStop = stopButtons().filter(isVisible).length;
+
+              if (!latest || latest.text.split('\n').length < 2) {
+                resetStreamingCandidate();
+                nativeStatus(
+                  'SCAN_WAIT_STREAMING',
+                  'visibleStop=' + visibleStop + ',adbExec=' + matches.length
+                );
+                return;
+              }
+
+              const key = hashText(latest.text);
+              const now = Date.now();
+
+              if (key !== streamingCandidateKey) {
+                streamingCandidateKey = key;
+                streamingCandidateSince = now;
+                nativeStatus(
+                  'ADB_EXEC_STABILIZING',
+                  'visibleStop=' + visibleStop + ',stable=0ms'
+                );
+                scheduleStreamingRecheck(STREAMING_STABLE_MS + 100);
+                return;
+              }
+
+              const stableMs = now - streamingCandidateSince;
+              if (stableMs < STREAMING_STABLE_MS) {
+                nativeStatus(
+                  'ADB_EXEC_STABILIZING',
+                  'visibleStop=' + visibleStop + ',stable=' + stableMs + 'ms'
+                );
+                scheduleStreamingRecheck(STREAMING_STABLE_MS - stableMs + 100);
+                return;
+              }
+
+              nativeStatus(
+                'ADB_EXEC_STABLE_STREAMING',
+                'visibleStop=' + visibleStop + ',stable=' + stableMs + 'ms'
+              );
+              resetStreamingCandidate();
+              dispatchBlock(latest, false);
+              return;
+            }
+
+            resetStreamingCandidate();
             matches.forEach(item => dispatchBlock(item, false));
           }
 
