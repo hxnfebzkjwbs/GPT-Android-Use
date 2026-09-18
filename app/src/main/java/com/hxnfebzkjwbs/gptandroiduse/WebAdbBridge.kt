@@ -236,6 +236,12 @@ class WebAdbBridge(
           let enabled = true;
           let timer = null;
           let bypassNextSend = false;
+          let internalSendTimer = null;
+          let internalSendInProgress = false;
+          let oneTapPending = false;
+          let oneTapCounter = 0;
+          const internalQueue = [];
+          const sentInternalIds = new Set();
           const seen = new Set();
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
@@ -610,26 +616,105 @@ class WebAdbBridge(
             return true;
           }
 
-          function submitMessage(text, attempts) {
-            if (!enabled) return;
-            const editor = findComposer();
-            if (!editor) {
-              if (attempts === 8 || attempts === 4 || attempts === 0) {
-                nativeStatus('COMPOSER_MISSING', 'attempts=' + attempts);
-              }
-              if (attempts > 0) setTimeout(() => submitMessage(text, attempts - 1), 350);
+          function scheduleInternalFlush(delayMs) {
+            if (internalSendTimer) clearTimeout(internalSendTimer);
+            internalSendTimer = setTimeout(() => {
+              internalSendTimer = null;
+              flushInternalQueue();
+            }, Math.max(100, delayMs || 250));
+          }
+
+          function enqueueInternalMessage(id, text, kind) {
+            if (!enabled || !id || !text) return false;
+            if (sentInternalIds.has(id) || internalQueue.some(item => item.id === id)) {
+              nativeStatus('INTERNAL_DUPLICATE_IGNORED', id);
+              return false;
+            }
+            internalQueue.push({
+              id: id,
+              text: text,
+              kind: kind || 'internal',
+              prepared: false
+            });
+            nativeStatus('INTERNAL_QUEUED', id);
+            scheduleInternalFlush(50);
+            return true;
+          }
+
+          function finishInternalItem(item) {
+            sentInternalIds.add(item.id);
+            const index = internalQueue.findIndex(candidate => candidate.id === item.id);
+            if (index >= 0) internalQueue.splice(index, 1);
+            if (item.kind === 'oneTap') oneTapPending = false;
+          }
+
+          function flushInternalQueue() {
+            if (!enabled || internalSendInProgress || !internalQueue.length) return;
+
+            const item = internalQueue[0];
+
+            if (isStreaming()) {
+              nativeStatus(
+                'INTERNAL_WAIT_STOP',
+                item.id + ':visibleStop=' + stopButtons().filter(isVisible).length
+              );
+              scheduleInternalFlush(400);
               return;
             }
-            nativeStatus('COMPOSER_FOUND', editor.id || editor.tagName);
-            const inserted = setComposerText(editor, text);
-            if (!inserted) {
-              nativeStatus('COMPOSER_WRITE_FAILED', editor.id || editor.tagName);
+
+            const editor = findComposer();
+            if (!editor) {
+              nativeStatus('INTERNAL_WAIT_COMPOSER', item.id);
+              scheduleInternalFlush(500);
+              return;
             }
-            setTimeout(() => {
-              if (!clickSend() && attempts > 0) {
-                setTimeout(() => submitMessage(text, attempts - 1), 350);
+
+            const current = composerText(editor);
+            if (!item.prepared) {
+              if (current.trim()) {
+                nativeStatus('INTERNAL_WAIT_USER_DRAFT', item.id);
+                scheduleInternalFlush(700);
+                return;
               }
-            }, 180);
+
+              const inserted = setComposerText(editor, item.text);
+              if (!inserted) {
+                nativeStatus('INTERNAL_WRITE_FAILED', item.id);
+                return;
+              }
+              item.prepared = true;
+              nativeStatus('INTERNAL_PREPARED', item.id);
+              scheduleInternalFlush(140);
+              return;
+            }
+
+            const currentPrepared = composerText(editor);
+            if (!currentPrepared.trim()) {
+              // React cleared/rebuilt the composer before the click. Prepare once again,
+              // but never while Stop is active.
+              item.prepared = false;
+              scheduleInternalFlush(150);
+              return;
+            }
+
+            const button = findSendButton();
+            if (!button || button.disabled || isStopActionButton(button)) {
+              nativeStatus('INTERNAL_WAIT_SEND', item.id);
+              scheduleInternalFlush(300);
+              return;
+            }
+
+            internalSendInProgress = true;
+            bypassNextSend = true;
+            button.click();
+            finishInternalItem(item);
+            internalSendInProgress = false;
+            nativeStatus(
+              'INTERNAL_SENT',
+              item.id + ':' + (button.getAttribute('data-testid') || button.id || 'button')
+            );
+
+            if (internalQueue.length) scheduleInternalFlush(250);
           }
 
           window.__gptAndroidUseBridgeResult = function(id, ok, output) {
@@ -637,9 +722,9 @@ class WebAdbBridge(
               'ADB_RESULT ' + id + '\n' +
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
-              'Continue from this result. If another device action is required, ' +
-              'reply with exactly one code block whose first line is ADB_EXEC.';
-            submitMessage(message, 8);
+              'The device command has finished. Do not issue another ADB_EXEC unless ' +
+              'the original user request still requires an additional distinct device action.';
+            enqueueInternalMessage('result:' + id, message, 'result');
           };
 
           window.__gptAndroidUseBridgeBootstrap = function() {
@@ -648,12 +733,22 @@ class WebAdbBridge(
 
           window.__gptAndroidUseOneTapAdbRun = function() {
             if (!enabled) return;
+            if (oneTapPending || isStreaming()) {
+              nativeStatus('ADB_RUN_BUSY', oneTapPending ? 'pending' : 'streaming');
+              return;
+            }
             const prompt =
               '请通过 Android ADB 读取当前手机电池状态。不要解释，不要回复 understood。' +
               '请严格只返回一个代码块，第一行必须是 ADB_EXEC，下一行使用 dumpsys battery。' +
               BRIDGE_HINT;
-            nativeStatus('ADB_RUN_BUTTON', 'sending battery-status request');
-            submitMessage(prompt, 8);
+            oneTapPending = true;
+            oneTapCounter += 1;
+            nativeStatus('ADB_RUN_BUTTON', 'queued battery-status request');
+            enqueueInternalMessage(
+              'one-tap:' + oneTapCounter,
+              prompt,
+              'oneTap'
+            );
           };
 
           window.__gptAndroidUseSelfCheck = function() {
@@ -706,9 +801,18 @@ class WebAdbBridge(
             if (!attachProtocolToComposer()) return;
 
             setTimeout(() => {
+              const freshButton = findSendButton();
+              if (!freshButton) {
+                nativeStatus('USER_SEND_ABORTED_NO_SEND', 'button state changed');
+                return;
+              }
               bypassNextSend = true;
-              button.click();
-              nativeStatus('USER_MESSAGE_SENT_WITH_PROTOCOL', button.id || button.getAttribute('data-testid') || 'button');
+              freshButton.click();
+              nativeStatus(
+                'USER_MESSAGE_SENT_WITH_PROTOCOL',
+                (freshButton.id || '') + ':' +
+                (freshButton.getAttribute('data-testid') || '')
+              );
             }, 100);
           }, true);
 
@@ -725,7 +829,11 @@ class WebAdbBridge(
             event.stopImmediatePropagation();
 
             if (!attachProtocolToComposer()) return;
-            setTimeout(() => clickSend(), 100);
+            setTimeout(() => {
+              if (!clickSend()) {
+                nativeStatus('USER_SEND_ABORTED_NO_SEND', 'keydown');
+              }
+            }, 100);
           }, true);
 
           window.__gptAndroidUseSetBridgeEnabled = function(value) {
@@ -733,15 +841,28 @@ class WebAdbBridge(
             if (enabled) {
               markExisting();
               scheduleScan();
+              scheduleInternalFlush(100);
             }
           };
 
           markExisting();
-          const observer = new MutationObserver(scheduleScan);
+          const observer = new MutationObserver(() => {
+            scheduleScan();
+            scheduleInternalFlush(120);
+          });
           observer.observe(document.documentElement, {
             childList: true,
             subtree: true,
-            characterData: true
+            characterData: true,
+            attributes: true,
+            attributeFilter: [
+              'data-testid',
+              'aria-label',
+              'title',
+              'disabled',
+              'hidden',
+              'aria-hidden'
+            ]
           });
 
           window.__gptAndroidUseBridgeInstalled = true;
