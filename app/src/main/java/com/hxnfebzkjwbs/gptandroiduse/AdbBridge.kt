@@ -131,6 +131,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     companion object {
         private const val ADB_WIFI_ENABLED_KEY = "adb_wifi_enabled"
         private const val PROBE_COMMAND = "settings get global development_settings_enabled"
-        private const val AUTO_CONNECT_TIMEOUT_MS = 10_000L
+        private const val AUTO_CONNECT_TIMEOUT_MS = 5_000L
     }
 }

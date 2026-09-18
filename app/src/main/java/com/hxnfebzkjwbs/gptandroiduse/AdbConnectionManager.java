@@ -48,10 +48,12 @@ import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Date;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 import io.github.muntashirakon.adb.AbsAdbConnectionManager;
 
 public final class AdbConnectionManager extends AbsAdbConnectionManager {
+    private static final long CONNECTION_TIMEOUT_SECONDS = 5L;
     private static AbsAdbConnectionManager INSTANCE;
     private PrivateKey privateKey;
     private Certificate certificate;
@@ -65,6 +67,7 @@ public final class AdbConnectionManager extends AbsAdbConnectionManager {
 
     private AdbConnectionManager(@NonNull Context context) throws Exception {
         setApi(Build.VERSION.SDK_INT);
+        setTimeout(CONNECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         privateKey = readPrivateKeyFromFile(context);
         certificate = readCertificateFromFile(context);
         if (privateKey == null || certificate == null) {
