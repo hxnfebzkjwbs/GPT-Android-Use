@@ -7,19 +7,37 @@ Android-side bridge for controlling the local device through user-authorized Wir
 - Android 11+ (API 30+) baseline
 - Opens Wireless debugging settings
 - Pairs to the same phone with Android's 6-digit Wireless ADB pairing code
+- Uses the actual Wireless debugging IP instead of assuming 127.0.0.1
+- Supports manual entry of both the pairing port and the separate connection port
+- Auto-discovers the connection port with mDNS as an optional fallback
 - Persists the ADB RSA/TLS identity
-- Auto-discovers and reconnects to an already paired Wireless ADB endpoint
 - Executes allowlisted `adb shell` commands directly from the phone
 - OEM guidance for Xiaomi/Redmi/POCO, OPPO/OnePlus/realme and Huawei
 - GitHub Actions builds a debug APK on every push / pull request
 
 ## First use
 
-1. Open **Developer options → Wireless debugging**.
-2. Tap **Pair device with pairing code**.
-3. In this app enter the displayed pairing port and six-digit code.
-4. Tap **Pair this phone**.
-5. After connection, execute a supported command such as:
+Android Wireless ADB normally exposes two ports:
+
+1. **Pairing port** — shown after tapping **Pair device with pairing code**. This port requires the 6-digit code.
+2. **Connection port** — shown on the main **Wireless debugging** screen. This port does not ask for the pairing code after the key has been paired.
+
+Example:
+
+```text
+Wireless debugging address: 172.19.0.1
+Pairing port:              42817
+Pairing code:              123456
+Connection port:           37145
+```
+
+In the app:
+
+1. Enter the Wireless debugging IP, e.g. `172.19.0.1`.
+2. Enter the pairing port and 6-digit code, then tap **Pair this phone**.
+3. Enter the connection port from the Wireless debugging main page and tap **Connect using address and port**.
+4. Alternatively, try **Auto-discover connection port (mDNS)**.
+5. Execute a supported command such as:
    - `input tap 500 500`
    - `input swipe 500 1500 500 500 300`
    - `dumpsys window`
