@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feature/android-shell-bridge
   pull_request:
   workflow_dispatch:
 
@@ -13,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +26,23 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+
+      - name: Restore fixed development signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          base64 --decode ci/fixed-debug.keystore.b64 > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Verify signing certificate fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="0D:41:FD:1E:54:BF:E4:08:0C:94:25:5F:FA:76:9A:37:1B:4F:40:9B:A9:4A:EC:6A:E7:9C:FC:31:69:AB:20:11"
+          ACTUAL="$(keytool -list -v             -keystore "$HOME/.android/debug.keystore"             -storepass android             -alias androiddebugkey | sed -n 's/^[[:space:]]*SHA256: //p')"
+          echo "Signing SHA-256: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
