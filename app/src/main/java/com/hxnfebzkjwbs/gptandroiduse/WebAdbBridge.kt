@@ -860,7 +860,8 @@ class WebAdbBridge(
               'aria-label',
               'title',
               'disabled',
-              'class'
+              'hidden',
+              'aria-hidden'
             ]
           });
 
