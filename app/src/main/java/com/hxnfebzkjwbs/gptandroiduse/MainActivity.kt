@@ -24,7 +24,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageAdbBridge: WebAdbBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var bridgeEnabled = false
-    private var pendingBridgeBootstrap = false
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -56,11 +55,8 @@ class MainActivity : AppCompatActivity() {
 
             if (bridgeEnabled) {
                 binding.bridgeToggleButton.text = "Bridge ON"
-                binding.bridgeStatusText.text = "Bridge: ON · waiting for ADB_EXEC"
-                pendingBridgeBootstrap = true
-                tryBootstrapBridgeConversation(binding.chatWebView.url)
+                binding.bridgeStatusText.text = "Bridge: ON · protocol attaches to your next message"
             } else {
-                pendingBridgeBootstrap = false
                 binding.bridgeToggleButton.text = "Bridge OFF"
                 binding.bridgeStatusText.text = "Bridge: OFF"
             }
@@ -74,7 +70,6 @@ class MainActivity : AppCompatActivity() {
                 pageAdbBridge.installForCurrentPage()
                 binding.chatWebView.postDelayed({
                     pageAdbBridge.runSelfTest()
-                    pageAdbBridge.bootstrapConversation()
                 }, 350)
             }
         }
@@ -164,7 +159,6 @@ class MainActivity : AppCompatActivity() {
                 pageAdbBridge.onTopLevelUrlChanged(url)
                 if (bridgeEnabled) {
                     pageAdbBridge.installForCurrentPage()
-                    tryBootstrapBridgeConversation(url)
                 }
                 super.onPageFinished(view, url)
             }
@@ -222,21 +216,6 @@ class MainActivity : AppCompatActivity() {
                 openExternalBrowser(Uri.parse(url))
             }
         }
-    }
-
-    private fun tryBootstrapBridgeConversation(url: String?) {
-        if (!pendingBridgeBootstrap || !isChatGptUrl(url)) return
-        binding.chatWebView.postDelayed({
-            if (bridgeEnabled && pendingBridgeBootstrap) {
-                pageAdbBridge.bootstrapConversation()
-                pendingBridgeBootstrap = false
-            }
-        }, 600)
-    }
-
-    private fun isChatGptUrl(url: String?): Boolean {
-        val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull().orEmpty()
-        return host == "chatgpt.com" || host.endsWith(".chatgpt.com")
     }
 
     private fun openExternalBrowser(uri: Uri) {

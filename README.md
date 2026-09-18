@@ -2,9 +2,9 @@
 
 Android app that combines an embedded ChatGPT web experience with a same-device Wireless ADB bridge.
 
-## Version 0.4.7
+## Version 0.4.8
 
-Version 0.4.7 fixes reply detection when ChatGPT leaves hidden stop controls mounted in the DOM and lets Test Bridge force-scan the latest ADB_EXEC block.
+Version 0.4.8 removes the standalone bridge bootstrap message, attaches the ADB protocol to each real user request, and broadens assistant reply detection across current ChatGPT DOM variants.
 
 ### Web ↔ ADB bridge
 
@@ -14,7 +14,7 @@ When Bridge is enabled:
 
 1. The app injects a page observer only while the top-level page is `chatgpt.com`.
 2. Existing conversation history is marked as already seen, so old ADB blocks are not replayed.
-3. The app sends one bridge-protocol message into the current ChatGPT conversation. Version 0.4.6 also supports the current `#composer-submit-button` and ProseMirror composer selectors.
+3. The app does not send a separate bridge-protocol message. When you send a normal request, the protocol is appended to that same user message before ChatGPT receives it.
 4. New assistant responses are watched for a fenced code block whose first line is exactly:
 
 ```text
@@ -117,7 +117,7 @@ Tap **Test Bridge** while Bridge is ON. The status line reports stages such as:
 - `ADB_EXEC_FOUND` — a new assistant ADB block was detected
 - `Bridge test: ADB OK` — the native Wireless ADB connection successfully ran a read-only settings query
 
-**Test Bridge** also retries the bridge protocol message.
+**Test Bridge** no longer sends a protocol message. It only checks the page bridge, force-scans the latest ADB_EXEC reply, and validates Wireless ADB.
 
 
 ### 0.4.7 reply execution fix
@@ -128,3 +128,21 @@ If an `ADB_EXEC` reply is already visible but was not executed, tap **Test Bridg
 - reports `ADB_EXEC_FORCE_FOUND` when the latest command block is located
 - reports `Bridge: Native received ADB_EXEC` as soon as the JavaScript call reaches Android
 - force-executes the latest matching block once for diagnosis
+
+
+### 0.4.8 inline protocol
+
+The bridge no longer creates a separate initialization turn that can produce an `understood` reply.
+
+When Bridge is ON and you send a normal request, the app intercepts the send action and appends a short `[ANDROID_ADB_BRIDGE]` instruction to that same message. Programmatic `ADB_RESULT` feedback bypasses this interception so results are not recursively modified.
+
+Assistant detection now accepts multiple current ChatGPT structures:
+
+- `[data-message-author-role="assistant"]`
+- `section[data-turn="assistant"]`
+- `[data-turn="assistant"]`
+- `[data-role="assistant"]`
+- `[data-message-author="assistant"]`
+- `.agent-turn`
+
+For command extraction it prefers the nested `pre code` element, falls back to `pre`, then to the assistant body when necessary. It searches for the `ADB_EXEC` marker even when a rendered language/copy label appears before the command text.
