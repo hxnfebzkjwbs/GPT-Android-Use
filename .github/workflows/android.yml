@@ -31,9 +31,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.android"
-          base64 --decode ci/fixed-debug.keystore.b64 > "$HOME/.android/debug.keystore"
-          chmod 600 "$HOME/.android/debug.keystore"
+          base64 --decode ci/fixed-debug.keystore.b64 > ci/fixed-debug.keystore
+          chmod 600 ci/fixed-debug.keystore
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
