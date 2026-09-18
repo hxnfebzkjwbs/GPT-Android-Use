@@ -15,6 +15,18 @@ android {
         versionName = "0.4.2"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("ci/fixed-debug.keystore")
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures { viewBinding = true }
 
     compileOptions {
