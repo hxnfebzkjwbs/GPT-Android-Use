@@ -16,6 +16,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.hxnfebzkjwbs.gptandroiduse.databinding.ActivityMainBinding
 
@@ -47,10 +48,24 @@ class MainActivity : AppCompatActivity() {
 
         pageAdbBridge = WebAdbBridge(
             applicationContext,
-            binding.chatWebView
-        ) { status ->
-            binding.bridgeStatusText.text = status
-        }
+            binding.chatWebView,
+            onStatus = { status ->
+                binding.bridgeStatusText.text = status
+            },
+            requestCommandApproval = { command, reason, complete ->
+                if (isFinishing || isDestroyed) {
+                    complete(false)
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle("Allow ADB command once?")
+                        .setMessage(command + "\n\n" + reason)
+                        .setPositiveButton("Allow once") { _, _ -> complete(true) }
+                        .setNegativeButton("Deny") { _, _ -> complete(false) }
+                        .setOnCancelListener { complete(false) }
+                        .show()
+                }
+            }
+        )
 
         configureWebView()
         pageAdbBridge.setEnabled(true)

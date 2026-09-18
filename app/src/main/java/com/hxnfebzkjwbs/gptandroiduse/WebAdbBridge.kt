@@ -7,12 +7,20 @@ import android.webkit.WebView
 import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class WebAdbBridge(
     context: Context,
     private val webView: WebView,
-    private val onStatus: (String) -> Unit
+    private val onStatus: (String) -> Unit,
+    private val requestCommandApproval: (
+        command: String,
+        reason: String,
+        complete: (Boolean) -> Unit
+    ) -> Unit
 ) {
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
@@ -173,15 +181,43 @@ class WebAdbBridge(
                     return@execute
                 }
 
-                commands.forEach { command ->
-                    val validation = CommandPolicy.validate(command)
-                    if (!validation.allowed) {
+                if (commands.size > 1) {
+                    postResult(
+                        requestId,
+                        false,
+                        "Only one ADB command is allowed per ADB_EXEC. " +
+                            "Send one step, wait for ADB_RESULT, then decide the next step."
+                    )
+                    return@execute
+                }
+
+                val command = commands.single()
+                activeCommand = command
+                val validation = CommandPolicy.validate(command)
+                val userApproved = when (validation.decision) {
+                    CommandDecision.ALLOW -> false
+                    CommandDecision.DENY -> {
                         postResult(
                             requestId,
                             false,
-                            "Blocked command: $command\nReason: ${validation.reason}"
+                            "Blocked command: " + command + "\nReason: " + validation.reason
                         )
                         return@execute
+                    }
+                    CommandDecision.REQUIRE_CONFIRMATION -> {
+                        failurePhase = "user_approval"
+                        postStatus("Bridge: waiting for user approval")
+                        val approved = requestApprovalBlocking(command, validation.reason)
+                        if (!approved) {
+                            postResult(
+                                requestId,
+                                false,
+                                "Command not executed: user denied or approval timed out.\n" +
+                                    "Command: " + command
+                            )
+                            return@execute
+                        }
+                        true
                     }
                 }
 
@@ -189,20 +225,14 @@ class WebAdbBridge(
                 postStatus("Bridge: connecting ADB…")
                 ensureAdbReady().getOrThrow()
 
+                failurePhase = "command_execute_1"
+                postStatus("Bridge: executing 1/1")
+                val result = adb.execute(command, userApproved).getOrThrow()
                 val output = buildString {
-                    commands.forEachIndexed { index, command ->
-                        activeCommand = command
-                        failurePhase = "command_execute_" + (index + 1)
-                        postStatus("Bridge: executing ${index + 1}/${commands.size}")
-                        append("[")
-                        append(index + 1)
-                        append("] $ ")
-                        append(command)
-                        append("\n")
-                        val result = adb.execute(command).getOrThrow()
-                        append(result.take(MAX_SINGLE_RESULT_CHARS))
-                        if (index != commands.lastIndex) append("\n\n")
-                    }
+                    append("[1] $ ")
+                    append(command)
+                    append("\n")
+                    append(result.take(MAX_SINGLE_RESULT_CHARS))
                 }.take(MAX_RESULT_CHARS)
 
                 postStatus("Bridge: ready")
@@ -258,6 +288,25 @@ class WebAdbBridge(
         enabled = false
         executor.shutdownNow()
         adb.disconnect()
+    }
+
+    private fun requestApprovalBlocking(command: String, reason: String): Boolean {
+        val latch = CountDownLatch(1)
+        val approved = AtomicBoolean(false)
+        val completed = AtomicBoolean(false)
+
+        webView.post {
+            requestCommandApproval(command, reason) { allow ->
+                if (completed.compareAndSet(false, true)) {
+                    approved.set(allow)
+                    latch.countDown()
+                }
+            }
+        }
+
+        val responded = latch.await(COMMAND_APPROVAL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        if (!responded) completed.set(true)
+        return responded && approved.get()
     }
 
     private fun buildFailureReport(
@@ -340,9 +389,10 @@ class WebAdbBridge(
           const BRIDGE_HINT =
             '\n\n' + PROTOCOL_TAG + '\n' +
             'If this request requires Android device access, reply with exactly one fenced code block. ' +
-            'The first line inside the block must be ADB_EXEC. Each following line must be one allowed ' +
-            'adb shell command without the "adb shell" prefix. Do not add prose outside the block. ' +
-            'If no device action is needed, answer normally.';
+            'The first line inside the block must be ADB_EXEC. Put exactly ONE adb shell command on the next line, ' +
+            'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
+            'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
+            'Do not add prose outside the block. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
           const PHASE_EXECUTING = 'EXECUTING';
@@ -1009,8 +1059,9 @@ class WebAdbBridge(
               'ADB_RESULT ' + id + '\n' +
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
-              'The device command has finished. Do not issue another ADB_EXEC unless ' +
-              'the original user request still requires an additional distinct device action.';
+              'The device command has finished. Inspect this result before deciding the next action. ' +
+              'If the original request still needs device work, issue exactly ONE next ADB_EXEC command; ' +
+              'do not batch multiple commands. Otherwise answer normally.';
 
             enqueueInternalMessage(
               'result:' + id,
@@ -1203,10 +1254,11 @@ class WebAdbBridge(
 
     companion object {
         private const val EXEC_MARKER = "ADB_EXEC"
-        private const val MAX_COMMANDS_PER_BLOCK = 8
+        private const val MAX_COMMANDS_PER_BLOCK = 1
         private const val MAX_BLOCK_CHARS = 6_000
         private const val MAX_SINGLE_RESULT_CHARS = 6_000
         private const val MAX_RESULT_CHARS = 12_000
         private const val WIRELESS_ADB_RESTART_DELAY_MS = 1_500L
+        private const val COMMAND_APPROVAL_TIMEOUT_SECONDS = 120L
     }
 }

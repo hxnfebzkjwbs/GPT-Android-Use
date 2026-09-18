@@ -19,7 +19,7 @@ interface AdbBridge {
     fun pair(host: String, port: Int, pairingCode: String): Result<Unit>
     fun connect(host: String, port: Int): Result<Unit>
     fun autoConnect(): Result<Unit>
-    fun execute(command: String): Result<String>
+    fun execute(command: String, userApproved: Boolean = false): Result<String>
     fun probe(): Result<Unit>
     fun isConnected(): Boolean
     fun hasSelfHealPermission(): Boolean
@@ -100,12 +100,12 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         return result
     }
 
-    override fun execute(command: String): Result<String> {
+    override fun execute(command: String, userApproved: Boolean): Result<String> {
         lastCommand = command.trim()
         lastStage = "shell_execute"
         val result = runCatching {
             val policy = CommandPolicy.validate(command)
-            require(policy.allowed) { policy.reason }
+            require(policy.canExecute(userApproved)) { policy.reason }
             runShellUnchecked(command.trim())
         }
         recordFailure("shell_execute", result.exceptionOrNull())
