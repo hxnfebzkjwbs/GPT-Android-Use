@@ -5,51 +5,61 @@ Android-side bridge for controlling the local device through user-authorized Wir
 ## Current capabilities
 
 - Android 11+ (API 30+) baseline
-- Opens Wireless debugging settings
-- Pairs to the same phone with Android's 6-digit Wireless ADB pairing code
-- Uses the actual Wireless debugging IP instead of assuming 127.0.0.1
-- Supports manual entry of both the pairing port and the separate connection port
-- Auto-discovers the connection port with mDNS as an optional fallback
+- Shizuku-style Wireless ADB pairing flow
+- Discovers `_adb-tls-pairing._tcp` with Android NSD/mDNS
+- Discovers `_adb-tls-connect._tcp` separately after pairing
+- Verifies the discovered service belongs to a network interface on this device
+- Uses `127.0.0.1:<discovered port>` for the normal same-device connection
+- Foreground pairing assistant keeps discovery alive while Android's pairing dialog is open
+- Six-digit pairing code is entered directly from a notification
+- Manual host/port entry is retained only as an advanced fallback
 - Persists the ADB RSA/TLS identity
 - Executes allowlisted `adb shell` commands directly from the phone
-- OEM guidance for Xiaomi/Redmi/POCO, OPPO/OnePlus/realme and Huawei
-- GitHub Actions builds a debug APK on every push / pull request
+- GitHub Actions builds a debug APK
+
+## Why Android Settings may show another IP
+
+Android's Wireless debugging page may display an address such as:
+
+```text
+172.19.0.1:37145
+```
+
+For same-device operation this does not mean the app must connect to `172.19.0.1`.
+
+The primary flow follows Shizuku's approach:
+
+1. Discover the ADB mDNS service.
+2. Resolve the advertised address and verify it belongs to this device.
+3. Keep the discovered port.
+4. Connect to `127.0.0.1:<port>`.
+
+The pairing port and connection port are separate services and normally have different random ports.
 
 ## First use
 
-Android Wireless ADB normally exposes two ports:
-
-1. **Pairing port** — shown after tapping **Pair device with pairing code**. This port requires the 6-digit code.
-2. **Connection port** — shown on the main **Wireless debugging** screen. This port does not ask for the pairing code after the key has been paired.
-
-Example:
-
-```text
-Wireless debugging address: 172.19.0.1
-Pairing port:              42817
-Pairing code:              123456
-Connection port:           37145
-```
-
-In the app:
-
-1. Enter the Wireless debugging IP, e.g. `172.19.0.1`.
-2. Enter the pairing port and 6-digit code, then tap **Pair this phone**.
-3. Enter the connection port from the Wireless debugging main page and tap **Connect using address and port**.
-4. Alternatively, try **Auto-discover connection port (mDNS)**.
-5. Execute a supported command such as:
+1. Tap **Start Shizuku-style pairing**.
+2. Allow notification permission if Android asks.
+3. The app opens **Wireless debugging**.
+4. Tap **Pair device with pairing code** and keep that system dialog open.
+5. Wait for the GPT Android Use notification to say the pairing service was found.
+6. Enter the six-digit code directly in that notification.
+7. Return to GPT Android Use and tap **Discover & connect**.
+8. Execute a supported command such as:
    - `input tap 500 500`
    - `input swipe 500 1500 500 500 300`
    - `dumpsys window`
    - `pm list packages`
 
-The app does not bypass Android's pairing authorization and does not require root or a computer.
+No computer or root is required.
+
+## Advanced fallback
+
+If a ROM does not expose the local ADB service on loopback, manual fields allow using the address and ports shown by Android Settings, such as `172.19.0.1`.
 
 ## Build
 
-The GitHub Actions workflow produces an artifact named `GPT-Android-Use-debug`.
-
-Local build:
+GitHub Actions produces an artifact named `GPT-Android-Use-debug`.
 
 ```bash
 gradle assembleDebug
