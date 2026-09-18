@@ -24,6 +24,13 @@ class WebAdbBridge(
     @Volatile
     private var enabled = false
 
+    @Volatile
+    private var trustedTopPage = false
+
+    fun onTopLevelUrlChanged(url: String?) {
+        trustedTopPage = isTrustedChatGptUrl(url)
+    }
+
     fun setEnabled(value: Boolean) {
         enabled = value
         webView.post {
@@ -46,14 +53,14 @@ class WebAdbBridge(
     }
 
     fun installForCurrentPage() {
-        if (!enabled || !isTrustedChatGptUrl(webView.url)) return
+        if (!enabled || !trustedTopPage) return
         webView.evaluateJavascript(installScript(), null)
     }
 
     @JavascriptInterface
     fun executeBlock(token: String, requestId: String, payload: String) {
         if (!enabled || token != sessionToken) return
-        if (!isTrustedChatGptUrl(webView.url)) {
+        if (!trustedTopPage) {
             postResult(requestId, false, "Bridge blocked: current page is not chatgpt.com")
             return
         }
