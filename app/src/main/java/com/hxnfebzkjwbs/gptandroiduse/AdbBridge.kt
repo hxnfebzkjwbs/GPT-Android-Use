@@ -41,6 +41,8 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     @Volatile private var lastCommand = "none"
     @Volatile private var lastConnectSuccessAt = 0L
     @Volatile private var lastProbeSuccessAt = 0L
+    @Volatile private var targetPackage: String? = null
+    @Volatile private var lastForegroundPackage = "unknown"
 
     private val shellLock = Any()
     private var shellStream: AdbStream? = null
@@ -109,10 +111,32 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         val result = runCatching {
             val policy = CommandPolicy.validate(command)
             require(policy.canExecute(userApproved)) { policy.reason }
-            if (command.trim().startsWith("uiautomator dump", ignoreCase = true)) {
-                observeUi().getOrThrow()
-            } else {
-                runShellUnchecked(command.trim())
+
+            val normalized = command.trim().replace(Regex("\\s+"), " ")
+            when {
+                normalized.startsWith("uiautomator dump", ignoreCase = true) -> {
+                    requireTargetForeground()
+                    observeUi().getOrThrow()
+                }
+
+                isTargetInteractionCommand(normalized) -> {
+                    requireTargetForeground()
+                    runShellUnchecked(normalized)
+                }
+
+                isTargetLaunchCommand(normalized) -> {
+                    val output = runShellUnchecked(normalized)
+                    establishTargetAfterLaunch(normalized)
+                    output
+                }
+
+                normalized.startsWith("am force-stop ", ignoreCase = true) -> {
+                    val output = runShellUnchecked(normalized)
+                    clearTargetIfStopped(normalized)
+                    output
+                }
+
+                else -> runShellUnchecked(normalized)
             }
         }
         recordFailure("shell_execute", result.exceptionOrNull())
@@ -175,6 +199,7 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
     override fun observeUi(): Result<String> = runCatching {
         lastStage = "ui_observe"
+        requireTargetForeground()
         val raw = runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
         val xml = extractHierarchyXml(raw)
         val summary = summarizeUiXml(xml)
@@ -205,6 +230,8 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             appendLine("endpoint: " + lastEndpoint)
             appendLine("manager_is_connected: " + isConnected())
             appendLine("persistent_shell_open: " + shellOpen)
+            appendLine("target_package: " + (targetPackage ?: "none"))
+            appendLine("last_foreground_package: " + lastForegroundPackage)
             appendLine("wireless_debugging_enabled: " + isWirelessDebuggingEnabled())
             appendLine("wifi_connected: " + isWifiConnected())
             appendLine("self_heal_enabled: " + AdbSelfHeal.isEnabled(context))
@@ -308,6 +335,127 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                 invalidateBrokenSession()
                 throw t
             }
+        }
+    }
+
+    private fun isTargetInteractionCommand(command: String): Boolean {
+        val lower = command.lowercase()
+        return lower.startsWith("input tap ") ||
+            lower.startsWith("input swipe ") ||
+            lower.startsWith("input text ") ||
+            lower.startsWith("input keyevent ")
+    }
+
+    private fun isTargetLaunchCommand(command: String): Boolean {
+        val lower = command.lowercase()
+        return lower.startsWith("am start ") || lower.startsWith("monkey ")
+    }
+
+    private fun establishTargetAfterLaunch(command: String) {
+        val declared = extractDeclaredTargetPackage(command)
+        var foreground = ""
+
+        repeat(TARGET_LAUNCH_POLL_ATTEMPTS) { attempt ->
+            if (attempt > 0) Thread.sleep(TARGET_LAUNCH_POLL_DELAY_MS)
+            foreground = currentForegroundPackage()
+            if (foreground.isNotBlank() &&
+                foreground != context.packageName
+            ) {
+                return@repeat
+            }
+        }
+
+        val chosen = foreground
+            .takeIf { it.isNotBlank() && it != context.packageName }
+            ?: declared
+            ?: error(
+                "Target app did not become foreground after launch. " +
+                    "Current foreground package: " +
+                    lastForegroundPackage
+            )
+
+        targetPackage = chosen
+        lastStage = "target_established"
+    }
+
+    private fun requireTargetForeground() {
+        val expected = targetPackage ?: error(
+            "No external target app has been established. " +
+                "For tasks that control another app, the first device command must launch that app " +
+                "with am start or monkey -p before using uiautomator dump or input commands."
+        )
+
+        val foreground = currentForegroundPackage()
+        if (foreground != expected) {
+            throw IllegalStateException(
+                "Target app is not foreground. target_package=" + expected +
+                    ", foreground_package=" + foreground +
+                    ". Re-open the target app before inspecting or interacting with its UI."
+            )
+        }
+    }
+
+    private fun currentForegroundPackage(): String {
+        val windowDump = runShellUnchecked("dumpsys window windows")
+        val windowPatterns = listOf(
+            Regex("""mCurrentFocus=.*?\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+"""),
+            Regex("""mFocusedApp=.*?\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+""")
+        )
+
+        windowPatterns.forEach { pattern ->
+            val value = pattern.find(windowDump)?.groupValues?.getOrNull(1).orEmpty()
+            if (value.isNotBlank()) {
+                lastForegroundPackage = value
+                return value
+            }
+        }
+
+        val activityDump = runShellUnchecked("dumpsys activity activities")
+        val activityPatterns = listOf(
+            Regex("""mResumedActivity:.*?\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+"""),
+            Regex("""topResumedActivity=.*?\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+"""),
+            Regex("""ResumedActivity:.*?\s([A-Za-z0-9._]+)/[A-Za-z0-9.$_/]+""")
+        )
+
+        activityPatterns.forEach { pattern ->
+            val value = pattern.find(activityDump)?.groupValues?.getOrNull(1).orEmpty()
+            if (value.isNotBlank()) {
+                lastForegroundPackage = value
+                return value
+            }
+        }
+
+        lastForegroundPackage = "unknown"
+        return ""
+    }
+
+    private fun extractDeclaredTargetPackage(command: String): String? {
+        val component = Regex(
+            """(?:^|\s)-n\s+([A-Za-z0-9._]+)/[^\s]+""",
+            RegexOption.IGNORE_CASE
+        ).find(command)?.groupValues?.getOrNull(1)
+        if (!component.isNullOrBlank()) return component
+
+        val packageArg = Regex(
+            """(?:^|\s)-p\s+([A-Za-z0-9._]+)(?:\s|$)""",
+            RegexOption.IGNORE_CASE
+        ).find(command)?.groupValues?.getOrNull(1)
+        if (!packageArg.isNullOrBlank()) return packageArg
+
+        return null
+    }
+
+    private fun clearTargetIfStopped(command: String) {
+        val stopped = command
+            .trim()
+            .substringAfter("am force-stop ", "")
+            .trim()
+            .split(Regex("\\s+"))
+            .firstOrNull()
+            .orEmpty()
+
+        if (stopped.isNotBlank() && stopped == targetPackage) {
+            targetPackage = null
         }
     }
 
@@ -431,5 +579,7 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val MAX_UI_TEXT_CHARS = 160
         private const val MAX_UI_LINE_CHARS = 420
         private const val MAX_UI_RESULT_CHARS = 10_000
+        private const val TARGET_LAUNCH_POLL_ATTEMPTS = 6
+        private const val TARGET_LAUNCH_POLL_DELAY_MS = 200L
     }
 }
