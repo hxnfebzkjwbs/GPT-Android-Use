@@ -336,8 +336,7 @@ class WebAdbBridge(
                     postResult(
                         requestId,
                         false,
-                        "ADB_EXEC block rejected: missing required STATUS: 进行中 line.\n" +
-                            "Use exactly:\nADB_EXEC\nSTATUS: 进行中\nSTEP: 用一句中文说明这一步做什么以及依据\n<one adb shell command>"
+                        "ADB_EXEC block rejected: invalid task-status/STEP structure."
                     )
                     return@execute
                 }
@@ -605,48 +604,75 @@ class WebAdbBridge(
         return parts.joinToString(" <- ")
     }
 
-    private fun parseTaskStatus(payload: String): String? {
-        if (payload.length > MAX_BLOCK_CHARS) return null
-        val lines = payload.replace("\r", "").lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
+    private fun normalizedBlockLines(
+        payload: String
+    ): List<String> {
+        if (payload.length > MAX_BLOCK_CHARS) return emptyList()
+        return payload
+            .replace("\r", "")
+            .lines()
+            .map { line ->
+                line.trim()
+                    .removePrefix("\`\`\`")
+                    .trim()
+            }
+            .filter {
+                it.isNotBlank() &&
+                    it != "\`\`\`" &&
+                    !it.startsWith("#")
+            }
+    }
 
-        if (lines.size < 4 || lines.first() != EXEC_MARKER) return null
-        val statusLine = lines[1]
-        if (!statusLine.startsWith(STATUS_MARKER, ignoreCase = true)) {
-            return null
+    private fun parseTaskStatus(payload: String): String? {
+        val lines = normalizedBlockLines(payload)
+        if (lines.isEmpty() || lines.first() != EXEC_MARKER) return null
+
+        val explicit = lines.firstOrNull {
+            it.startsWith(STATUS_MARKER, ignoreCase = true)
+        }?.substringAfter(":")?.trim()
+
+        if (explicit != null) {
+            return explicit.takeIf { it == STATUS_IN_PROGRESS }
         }
-        return statusLine.substringAfter(":").trim()
-            .takeIf { it == STATUS_IN_PROGRESS }
+
+        // Compatibility: an otherwise valid ADB_EXEC block from the model may
+        // omit STATUS. Do not deadlock the automation for that formatting
+        // mistake; Native owns the runtime state and can safely infer 进行中.
+        val hasStep = lines.any {
+            it.startsWith(STEP_MARKER, ignoreCase = true)
+        }
+        return if (hasStep) STATUS_IN_PROGRESS else null
     }
 
     private fun parseStepDescription(payload: String): String? {
-        if (payload.length > MAX_BLOCK_CHARS) return null
-        val lines = payload.replace("\r", "").lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
+        val lines = normalizedBlockLines(payload)
+        if (lines.isEmpty() || lines.first() != EXEC_MARKER) return null
 
-        if (lines.size < 4 || lines.first() != EXEC_MARKER) return null
-        val stepLine = lines[2]
-        if (!stepLine.startsWith(STEP_MARKER, ignoreCase = true)) return null
+        val stepLine = lines.firstOrNull {
+            it.startsWith(STEP_MARKER, ignoreCase = true)
+        } ?: return null
+
         return stepLine.substringAfter(":").trim()
             .takeIf { it.length >= MIN_STEP_DESCRIPTION_CHARS }
     }
 
     private fun parseCommands(payload: String): List<String> {
-        if (payload.length > MAX_BLOCK_CHARS) return emptyList()
-        val lines = payload.replace("\r", "").lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() && !it.startsWith("#") }
+        val lines = normalizedBlockLines(payload)
+        if (lines.isEmpty() || lines.first() != EXEC_MARKER) {
+            return emptyList()
+        }
 
-        if (lines.size < 4 || lines.first() != EXEC_MARKER) return emptyList()
-        if (!lines[1].startsWith(STATUS_MARKER, ignoreCase = true)) {
-            return emptyList()
+        val stepIndex = lines.indexOfFirst {
+            it.startsWith(STEP_MARKER, ignoreCase = true)
         }
-        if (!lines[2].startsWith(STEP_MARKER, ignoreCase = true)) {
-            return emptyList()
-        }
-        return lines.drop(3)
+        if (stepIndex < 0) return emptyList()
+
+        return lines
+            .drop(stepIndex + 1)
+            .filterNot {
+                it.startsWith(STATUS_MARKER, ignoreCase = true) ||
+                    it.startsWith(STEP_MARKER, ignoreCase = true)
+            }
     }
 
     private fun postResult(requestId: String, ok: Boolean, output: String) {
@@ -990,19 +1016,39 @@ class WebAdbBridge(
           }
 
           function extractPayload(node) {
-            const raw = (node.innerText || node.textContent || '').replace(/\r/g, '');
+            const raw =
+              (node.innerText || node.textContent || '')
+                .replace(/\r/g, '');
             const lines = raw.split('\n');
-            const markerIndex = lines.findIndex(line => line.trim() === MARKER);
+
+            const markerIndex = lines.findIndex(line => {
+              const normalized =
+                line
+                  .trim()
+                  .replace(/^\`\`\`[A-Za-z0-9_-]*\s*/, '')
+                  .replace(/\`\`\`$/, '')
+                  .trim();
+              return normalized === MARKER;
+            });
             if (markerIndex < 0) return '';
 
             const payload = [MARKER];
-            for (let i = markerIndex + 1; i < lines.length && payload.length <= 9; i++) {
-              const line = lines[i].trim();
+            for (
+              let i = markerIndex + 1;
+              i < lines.length && payload.length <= 10;
+              i++
+            ) {
+              let line = lines[i].trim();
+              if (/^\`\`\`/.test(line)) {
+                line = line.replace(/^\`\`\`[A-Za-z0-9_-]*/, '').trim();
+              }
+              if (line === '\`\`\`') break;
               if (!line && payload.length > 1) break;
               if (!line) continue;
               if (/^(copy code|copy)$/i.test(line)) continue;
               payload.push(line);
             }
+
             return payload.join('\n').trim();
           }
 
@@ -1026,9 +1072,20 @@ class WebAdbBridge(
               if (wholeText.includes(MARKER)) out.push(surface);
             }
 
-            return uniqueElements(out)
+            const payloads = uniqueElements(out)
               .map(node => extractPayload(node))
               .filter(payload => !!payload);
+
+            if (!payloads.length) {
+              const wholeText =
+                (surface.innerText || surface.textContent || '');
+              if (wholeText.includes(MARKER)) {
+                const fallback = extractPayload(surface);
+                if (fallback) payloads.push(fallback);
+              }
+            }
+
+            return Array.from(new Set(payloads));
           }
 
           function scheduleTransactionAdvance(delayMs) {
