@@ -1641,11 +1641,11 @@ class WebAdbBridge(
 
           window.__gptAndroidUseBridgeHealth = function() {
             if (!enabled) return 'disabled';
+            if (!window.__gptAndroidUseBridgeInstalled) {
+              return 'script-not-installed';
+            }
             const editor = findComposer();
             if (!editor) return 'composer-missing';
-            if (!findSendButton() && !isStreaming()) {
-              return 'send-control-missing';
-            }
             return 'ready';
           };
 
