@@ -613,12 +613,12 @@ class WebAdbBridge(
             .lines()
             .map { line ->
                 line.trim()
-                    .removePrefix("\`\`\`")
+                    .removePrefix("```")
                     .trim()
             }
             .filter {
                 it.isNotBlank() &&
-                    it != "\`\`\`" &&
+                    it != "```" &&
                     !it.startsWith("#")
             }
     }
@@ -1016,8 +1016,8 @@ class WebAdbBridge(
               const normalized =
                 line
                   .trim()
-                  .replace(/^\`\`\`[A-Za-z0-9_-]*\s*/, '')
-                  .replace(/\`\`\`$/, '')
+                  .replace(/^```[A-Za-z0-9_-]*\s*/, '')
+                  .replace(/```$/, '')
                   .trim();
               return (
                 normalized === MARKER ||
@@ -1033,10 +1033,10 @@ class WebAdbBridge(
               i++
             ) {
               let line = lines[i].trim();
-              if (/^\`\`\`/.test(line)) {
-                line = line.replace(/^\`\`\`[A-Za-z0-9_-]*/, '').trim();
+              if (/^```/.test(line)) {
+                line = line.replace(/^```[A-Za-z0-9_-]*/, '').trim();
               }
-              if (line === '\`\`\`') break;
+              if (line === '```') break;
               if (!line && payload.length > 1) break;
               if (!line) continue;
               if (/^(copy code|copy)$/i.test(line)) continue;
