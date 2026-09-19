@@ -59,7 +59,9 @@ class FirstRunSetupActivity : AppCompatActivity() {
         }
 
         binding.finishSetupButton.setOnClickListener {
-            markCompleted(this)
+            if (allRequiredReady()) {
+                markCompleted(this)
+            }
             finish()
         }
 
@@ -103,12 +105,26 @@ class FirstRunSetupActivity : AppCompatActivity() {
         binding.notificationSetupButton.text =
             if (notificationsReady) "已完成" else "开启"
 
-        val coreReady =
-            overlayReady &&
-                accessibilityReady &&
-                notificationsReady
         binding.finishSetupButton.text =
-            if (coreReady) "进入应用" else "稍后完成"
+            if (allRequiredReady()) "进入应用" else "稍后完成"
+    }
+
+    private fun allRequiredReady(): Boolean {
+        val overlayReady = Settings.canDrawOverlays(this)
+        val accessibilityReady =
+            TextInputAccessibilityService.isConnected()
+        val notificationsReady =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+        val adbReady = adb.isSessionReady()
+
+        return overlayReady &&
+            accessibilityReady &&
+            notificationsReady &&
+            adbReady
     }
 
     companion object {

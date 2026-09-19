@@ -684,7 +684,9 @@ class MainActivity : AppCompatActivity() {
         if (!bridgeReady) recoverBridgeWithoutReload()
         scheduleReadinessRetry()
         if (FirstRunSetupActivity.isCompleted(this)) {
-            ensureOverlayCapability()
+            if (!firstRunGuideLaunched) {
+                ensureOverlayCapability()
+            }
             startOverlayService()
         } else {
             maybeLaunchFirstRunGuide()
