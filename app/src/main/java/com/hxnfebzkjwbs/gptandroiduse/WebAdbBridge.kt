@@ -160,15 +160,35 @@ class WebAdbBridge(
         onComplete: (Boolean, String) -> Unit
     ) {
         executor.execute {
-            postStatus("ADB: checking connection…")
+            postStatus(
+                if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                    "Accessibility: checking service…"
+                } else {
+                    "ADB: checking connection…"
+                }
+            )
             val result = ensureAdbReady()
             if (result.isSuccess) {
-                postStatus("ADB: connected")
+                postStatus(
+                    if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                        "Accessibility: ready"
+                    } else {
+                        "ADB: connected"
+                    }
+                )
                 webView.post { onComplete(true, "connected") }
             } else {
                 val message =
                     result.exceptionOrNull()?.message ?: "unknown error"
-                postStatus("ADB: reconnect failed · $message")
+                postStatus(
+                    (
+                        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                            "Accessibility: not ready · "
+                        } else {
+                            "ADB: reconnect failed · "
+                        }
+                    ) + message
+                )
                 webView.post {
                     onComplete(false, message.take(300))
                 }
@@ -223,12 +243,26 @@ class WebAdbBridge(
 
         executor.execute {
             try {
+                if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                    postStatus(
+                        "Bridge test: checking Accessibility…"
+                    )
+                    ensureAdbReady().getOrThrow()
+                    postStatus(
+                        "Bridge test: Accessibility OK"
+                    )
+                    return@execute
+                }
+
                 postStatus("Bridge test: connecting Wireless ADB…")
                 ensureAdbReady().getOrThrow()
-                val value = adb.execute("settings get global development_settings_enabled")
-                    .getOrThrow()
-                    .trim()
-                postStatus("Bridge test: ADB OK · dev_settings=$value")
+                val value = adb.execute(
+                    "settings get global development_settings_enabled"
+                ).getOrThrow().trim()
+                postStatus(
+                    "Bridge test: ADB OK · dev_settings=" +
+                        value
+                )
             } catch (t: Throwable) {
                 val report = buildFailureReport(
                     requestId = "bridge-test",
@@ -499,6 +533,10 @@ class WebAdbBridge(
     }
 
     private fun ensureAdbReady(): Result<Unit> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return adb.probe()
+        }
+
         if (adb.isSessionReady()) {
             return Result.success(Unit)
         }

@@ -57,6 +57,9 @@ interface AdbBridge {
 }
 
 class AndroidAdbBridge(private val context: Context) : AdbBridge {
+    private val accessibilityBackend =
+        AccessibilityCommandExecutor(context)
+
     @Volatile private var lastEndpoint = "none"
     @Volatile private var lastStage = "init"
     @Volatile private var lastError = "none"
@@ -99,6 +102,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun connect(host: String, port: Int): Result<Unit> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.probe()
+        }
         lastEndpoint = host.trim() + ":" + port
         lastStage = "manual_connect"
         val result = runCatching {
@@ -117,6 +123,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun autoConnect(): Result<Unit> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.probe()
+        }
         lastStage = "tls_discovery"
         val result = runCatching {
             val manager = manager()
@@ -169,6 +178,12 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun execute(command: String, userApproved: Boolean): Result<String> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.execute(
+                command,
+                userApproved
+            )
+        }
         lastCommand = command.trim()
         lastStage = "shell_execute"
         val result = runCatching {
@@ -239,6 +254,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun probe(): Result<Unit> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.probe()
+        }
         lastStage = "probe"
         val result = runCatching {
             runShellUnchecked(PROBE_COMMAND)
@@ -254,10 +272,19 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun isConnected(): Boolean =
-        runCatching { manager().isConnected }.getOrDefault(false)
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            accessibilityBackend.isReady()
+        } else {
+            runCatching {
+                manager().isConnected
+            }.getOrDefault(false)
+        }
 
-    override fun isSessionReady(): Boolean =
-        synchronized(shellLock) {
+    override fun isSessionReady(): Boolean {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.isReady()
+        }
+        return synchronized(shellLock) {
             runCatching {
                 manager().isConnected &&
                     shellStream?.isClosed == false &&
@@ -265,28 +292,49 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                     shellWriter != null
             }.getOrDefault(false)
         }
+    }
 
     override fun hasSelfHealPermission(): Boolean =
-        context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) ==
+        !BuildConfig.USE_ACCESSIBILITY_BACKEND &&
+            context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) ==
             PackageManager.PERMISSION_GRANTED
 
-    override fun grantSelfHealPermission(): Result<Unit> = runCatching {
+    override fun grantSelfHealPermission(): Result<Unit> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return Result.failure(
+                UnsupportedOperationException(
+                    "Self-heal is not used by the Accessibility backend"
+                )
+            )
+        }
+        return runCatching {
         if (hasSelfHealPermission()) return@runCatching
         autoConnect().getOrThrow()
         val command = "pm grant " + context.packageName + " " +
             Manifest.permission.WRITE_SECURE_SETTINGS
         runShellUnchecked(command)
         check(hasSelfHealPermission()) { "WRITE_SECURE_SETTINGS was not granted" }
+        }
     }
 
     override fun isWirelessDebuggingEnabled(): Boolean =
-        Settings.Global.getInt(context.contentResolver, ADB_WIFI_ENABLED_KEY, 0) != 0
+        !BuildConfig.USE_ACCESSIBILITY_BACKEND &&
+            Settings.Global.getInt(context.contentResolver, ADB_WIFI_ENABLED_KEY, 0) != 0
 
-    override fun enableWirelessDebugging(): Result<Unit> = runCatching {
+    override fun enableWirelessDebugging(): Result<Unit> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return Result.failure(
+                UnsupportedOperationException(
+                    "Wireless debugging is not used by the Accessibility backend"
+                )
+            )
+        }
+        return runCatching {
         check(hasSelfHealPermission()) { "WRITE_SECURE_SETTINGS is not granted" }
         check(isWifiConnected()) { "Wi-Fi is not connected" }
         check(Settings.Global.putInt(context.contentResolver, ADB_WIFI_ENABLED_KEY, 1)) {
             "Android rejected the Wireless debugging setting change"
+        }
         }
     }
 
@@ -298,7 +346,11 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }
     }
 
-    override fun observeUi(verifyTarget: Boolean): Result<String> = runCatching {
+    override fun observeUi(verifyTarget: Boolean): Result<String> {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.observeUi()
+        }
+        return runCatching {
         lastStage = "ui_observe"
         if (verifyTarget) requireTargetForeground()
 
@@ -334,17 +386,26 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         lastStage = "ui_observe_ok"
         lastError = "none"
         result
-    }.onFailure {
-        recordFailure("ui_observe", it)
+        }.onFailure {
+            recordFailure("ui_observe", it)
+        }
     }
 
     override fun consumePendingScreenshot(): ScreenshotAttachment? {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend
+                .consumePendingScreenshot()
+        }
         val value = pendingScreenshot
         pendingScreenshot = null
         return value
     }
 
     override fun disconnect() {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            accessibilityBackend.disconnect()
+            return
+        }
         lastStage = "disconnect"
         synchronized(shellLock) {
             closeShellLocked()
@@ -353,6 +414,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     override fun diagnostics(): String {
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            return accessibilityBackend.diagnostics()
+        }
         val now = System.currentTimeMillis()
         val connectAge = ageMillis(now, lastConnectSuccessAt)
         val probeAge = ageMillis(now, lastProbeSuccessAt)
