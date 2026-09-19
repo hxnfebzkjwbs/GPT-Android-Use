@@ -21,7 +21,8 @@ class WebAdbBridge(
         command: String,
         reason: String,
         complete: (Boolean) -> Unit
-    ) -> Unit
+    ) -> Unit,
+    private val onNativeAssistantMessage: (String) -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
@@ -64,6 +65,42 @@ class WebAdbBridge(
                 "window.__gptAndroidUseBridgeBootstrap && window.__gptAndroidUseBridgeBootstrap();",
                 null
             )
+        }
+    }
+
+    fun sendNativeMessage(
+        text: String,
+        onComplete: (String) -> Unit = {}
+    ) {
+        val message = text.trim()
+        if (!enabled) {
+            onComplete("disabled")
+            return
+        }
+        if (!trustedTopPage) {
+            onComplete("not-trusted")
+            return
+        }
+        if (message.isBlank()) {
+            onComplete("empty")
+            return
+        }
+
+        webView.post {
+            val js =
+                "window.__gptAndroidUseNativeSend ? " +
+                    "window.__gptAndroidUseNativeSend(" +
+                    JSONObject.quote(message) +
+                    ") : 'not-ready';"
+            webView.evaluateJavascript(js) { raw ->
+                val result = raw
+                    ?.trim()
+                    ?.removePrefix("\"")
+                    ?.removeSuffix("\"")
+                    ?.replace("\\\"", "\"")
+                    ?: "unknown"
+                onComplete(result)
+            }
         }
     }
 
@@ -144,6 +181,28 @@ class WebAdbBridge(
     fun reportStatus(token: String, stage: String, detail: String) {
         if (!enabled || token != sessionToken || !trustedTopPage) return
         postStatus("Bridge page: " + stage.take(40) + " · " + detail.take(160))
+    }
+
+    @JavascriptInterface
+    fun nativeAssistantMessage(
+        token: String,
+        key: String,
+        text: String
+    ) {
+        if (!enabled || token != sessionToken || !trustedTopPage) return
+        val safe = text
+            .replace("\r", "")
+            .trim()
+            .take(MAX_NATIVE_MESSAGE_CHARS)
+        if (safe.isBlank()) return
+
+        AppLog.add(
+            "NATIVE_CHAT",
+            "assistant key=" + key.take(120) + "\n" + safe.take(500)
+        )
+        webView.post {
+            onNativeAssistantMessage(safe)
+        }
     }
 
     @JavascriptInterface
@@ -543,6 +602,7 @@ class WebAdbBridge(
           let oneTapCounter = 0;
           let transactionCounter = 0;
           let activeTransaction = null;
+          let lastNativeAssistantKey = '';
 
           const internalQueue = [];
           const sentInternalIds = new Set();
@@ -890,6 +950,29 @@ class WebAdbBridge(
               tx.baselineKey = snapshot.key;
               tx.candidateKey = '';
               tx.candidateSince = 0;
+
+              if (snapshot.key !== lastNativeAssistantKey) {
+                const nativeText =
+                  (snapshot.surface.innerText ||
+                   snapshot.surface.textContent ||
+                   '').trim();
+                if (nativeText) {
+                  try {
+                    window.GPTAndroidUseNative.nativeAssistantMessage(
+                      TOKEN,
+                      snapshot.key,
+                      nativeText
+                    );
+                    lastNativeAssistantKey = snapshot.key;
+                  } catch (e) {
+                    nativeStatus(
+                      'NATIVE_CHAT_CALLBACK_ERROR',
+                      String(e)
+                    );
+                  }
+                }
+              }
+
               finishTransaction('assistant-final');
               return;
             }
@@ -1385,6 +1468,35 @@ class WebAdbBridge(
             nativeStatus('INLINE_PROTOCOL_READY', 'state-machine bridge ready');
           };
 
+          window.__gptAndroidUseNativeSend = function(text) {
+            if (!enabled) return 'disabled';
+            if (isStreaming()) return 'streaming';
+
+            const message = String(text || '').trim();
+            if (!message) return 'empty';
+
+            if (
+              activeTransaction &&
+              (activeTransaction.phase === PHASE_EXECUTING ||
+               activeTransaction.phase === PHASE_RESULT_PENDING)
+            ) {
+              return 'busy';
+            }
+
+            if (activeTransaction) {
+              finishTransaction('superseded-by-native-message');
+            }
+
+            const editor = findComposer();
+            if (!editor) return 'composer-missing';
+
+            const inserted =
+              setComposerText(editor, message + BRIDGE_HINT);
+            if (!inserted) return 'write-failed';
+
+            return clickSend('native') ? 'sent' : 'send-failed';
+          };
+
           window.__gptAndroidUseOneTapAdbRun = function() {
             if (!enabled) return;
 
@@ -1574,5 +1686,6 @@ class WebAdbBridge(
         private const val COMMAND_APPROVAL_TIMEOUT_SECONDS = 120L
         private const val IMAGE_JS_CHUNK_CHARS = 48_000
         private const val MAX_IMAGE_ATTACH_ATTEMPTS = 4
+        private const val MAX_NATIVE_MESSAGE_CHARS = 24_000
     }
 }

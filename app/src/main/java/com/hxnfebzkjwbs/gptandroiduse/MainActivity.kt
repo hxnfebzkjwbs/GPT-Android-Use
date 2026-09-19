@@ -7,7 +7,13 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -15,6 +21,8 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -27,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageAdbBridge: WebAdbBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var overlayPromptShown = false
+    private var webDebugMode = false
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -68,10 +77,16 @@ class MainActivity : AppCompatActivity() {
                         .setOnCancelListener { complete(false) }
                         .show()
                 }
+            },
+            onNativeAssistantMessage = { text ->
+                addNativeMessage("assistant", text)
+                binding.bridgeStatusText.text = "AI：已回复"
             }
         )
 
         configureWebView()
+        configureNativeChat()
+        applyChatMode()
         pageAdbBridge.setEnabled(true)
         binding.bridgeStatusText.text = "Bridge: ON"
         ensureOverlayCapability()
@@ -110,11 +125,12 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (binding.chatWebView.canGoBack()) {
-                    binding.chatWebView.goBack()
-                } else {
-                    finish()
+                if (webDebugMode) {
+                    webDebugMode = false
+                    applyChatMode()
+                    return
                 }
+                finish()
             }
         })
 
@@ -122,6 +138,142 @@ class MainActivity : AppCompatActivity() {
             binding.chatWebView.loadUrl(CHATGPT_URL)
         } else {
             binding.chatWebView.restoreState(savedInstanceState)
+        }
+    }
+
+    private fun configureNativeChat() {
+        binding.chatModeButton.setOnClickListener {
+            webDebugMode = !webDebugMode
+            applyChatMode()
+        }
+
+        binding.nativeSendButton.setOnClickListener {
+            sendNativeChatMessage()
+        }
+
+        binding.nativeMessageInput.setOnEditorActionListener { _, actionId, event ->
+            val send =
+                actionId == EditorInfo.IME_ACTION_SEND ||
+                    (
+                        event?.keyCode == KeyEvent.KEYCODE_ENTER &&
+                            event.action == KeyEvent.ACTION_DOWN &&
+                            !event.isShiftPressed
+                    )
+            if (send) {
+                sendNativeChatMessage()
+                true
+            } else {
+                false
+            }
+        }
+
+        addNativeMessage(
+            "system",
+            "原生聊天界面已启动。Web 页面仅作为登录、传输和调试层。"
+        )
+    }
+
+    private fun applyChatMode() {
+        binding.nativeChatRoot.visibility =
+            if (webDebugMode) View.GONE else View.VISIBLE
+        binding.chatModeButton.text =
+            if (webDebugMode) "返回原生聊天" else "Web 调试"
+        binding.bridgeStatusText.text =
+            if (webDebugMode) "模式：Web 调试" else "模式：原生聊天"
+    }
+
+    private fun sendNativeChatMessage() {
+        val text = binding.nativeMessageInput.text
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        if (text.isBlank()) return
+
+        binding.nativeMessageInput.setText("")
+        binding.nativeSendButton.isEnabled = false
+        addNativeMessage("user", text)
+        binding.bridgeStatusText.text = "AI：发送中…"
+
+        pageAdbBridge.installForCurrentPage()
+        pageAdbBridge.sendNativeMessage(text) { result ->
+            runOnUiThread {
+                binding.nativeSendButton.isEnabled = true
+                when (result) {
+                    "sent" -> {
+                        binding.bridgeStatusText.text = "AI：等待回复…"
+                    }
+                    "not-ready", "composer-missing" -> {
+                        binding.bridgeStatusText.text =
+                            "Web 传输层尚未就绪，请稍后重试或打开 Web 调试"
+                        addNativeMessage(
+                            "system",
+                            "发送失败：ChatGPT Web 传输层尚未就绪。"
+                        )
+                    }
+                    else -> {
+                        binding.bridgeStatusText.text =
+                            "发送失败：" + result
+                        addNativeMessage(
+                            "system",
+                            "发送失败：" + result
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun addNativeMessage(role: String, text: String) {
+        if (!::binding.isInitialized || text.isBlank()) return
+
+        runOnUiThread {
+            val density = resources.displayMetrics.density
+            val bubble = TextView(this).apply {
+                this.text = text
+                textSize = if (role == "system") 12f else 15f
+                setTextColor(
+                    if (role == "user") Color.WHITE
+                    else Color.rgb(30, 30, 30)
+                )
+                setPadding(
+                    (12 * density).toInt(),
+                    (9 * density).toInt(),
+                    (12 * density).toInt(),
+                    (9 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    cornerRadius = 16 * density
+                    setColor(
+                        when (role) {
+                            "user" -> Color.rgb(55, 95, 210)
+                            "system" -> Color.rgb(235, 235, 235)
+                            else -> Color.rgb(245, 245, 245)
+                        }
+                    )
+                }
+            }
+
+            val params = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity =
+                    if (role == "user") Gravity.END else Gravity.START
+                val margin = (6 * density).toInt()
+                setMargins(
+                    if (role == "user") (36 * density).toInt() else margin,
+                    margin,
+                    if (role == "user") margin else (36 * density).toInt(),
+                    margin
+                )
+            }
+
+            binding.nativeMessageList.addView(bubble, params)
+            binding.nativeMessageScroll.post {
+                binding.nativeMessageScroll.fullScroll(
+                    View.FOCUS_DOWN
+                )
+            }
         }
     }
 
@@ -255,6 +407,9 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 pageAdbBridge.onTopLevelUrlChanged(url)
                 pageAdbBridge.installForCurrentPage()
+                binding.bridgeStatusText.text =
+                    if (webDebugMode) "Web 调试已就绪"
+                    else "原生聊天已就绪"
                 super.onPageFinished(view, url)
             }
         }

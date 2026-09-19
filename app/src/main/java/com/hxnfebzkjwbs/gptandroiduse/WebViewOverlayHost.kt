@@ -291,6 +291,7 @@ object WebViewOverlayHost {
             if (webView.parent !== container) {
                 container.addView(
                     webView,
+                    0,
                     FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
