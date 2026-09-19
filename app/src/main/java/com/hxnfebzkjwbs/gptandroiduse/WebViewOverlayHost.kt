@@ -1,7 +1,10 @@
 package com.hxnfebzkjwbs.gptandroiduse
 
 import android.content.Context
+import android.content.Intent
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -10,10 +13,9 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
+import android.widget.TextView
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import kotlin.math.ceil
-import kotlin.math.min
 
 object WebViewOverlayHost {
     private val lock = Any()
@@ -42,11 +44,11 @@ object WebViewOverlayHost {
                 val bounds = wm.currentWindowMetrics.bounds
                 val screenWidth = bounds.width().coerceAtLeast(1)
                 val screenHeight = bounds.height().coerceAtLeast(1)
-                val minSide = min(screenWidth, screenHeight)
-
-                // Tiny visible host is derived from the actual device size.
+                val density = appContext.resources.displayMetrics.density
                 val hostSide =
-                    ceil(minSide * MICRO_WINDOW_FRACTION).toInt().coerceAtLeast(1)
+                    (FLOATING_BUTTON_DP * density + 0.5f)
+                        .toInt()
+                        .coerceAtLeast(1)
 
                 if (overlayAttached && hostedWebView === webView) {
                     resizeBackgroundWebView(
@@ -66,7 +68,7 @@ object WebViewOverlayHost {
                     clipToPadding = true
                     importantForAccessibility =
                         FrameLayout.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                    alpha = MICRO_WINDOW_ALPHA
+                    alpha = 1f
                 }
 
                 webView.importantForAccessibility =
@@ -77,6 +79,47 @@ object WebViewOverlayHost {
                     screenHeight
                 )
                 root.addView(webView)
+
+                val bubble = TextView(appContext).apply {
+                    text = "GPT"
+                    setTextColor(Color.WHITE)
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    isClickable = true
+                    isFocusable = false
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(Color.argb(230, 38, 38, 38))
+                    }
+                    setOnClickListener {
+                        AppLog.add("MICRO_OVERLAY", "floating button clicked")
+                        runCatching {
+                            appContext.startActivity(
+                                Intent(appContext, MainActivity::class.java).apply {
+                                    addFlags(
+                                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                    )
+                                }
+                            )
+                        }.onFailure {
+                            AppLog.add(
+                                "MICRO_OVERLAY",
+                                "foreground launch failed: " +
+                                    (it.message ?: it.javaClass.simpleName)
+                            )
+                        }
+                    }
+                }
+
+                root.addView(
+                    bubble,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
 
                 return@synchronized runCatching {
                     wm.addView(
@@ -101,7 +144,7 @@ object WebViewOverlayHost {
                         "MICRO_OVERLAY",
                         "host=" + hostSide + "x" + hostSide +
                             " webview=" + screenWidth + "x" + screenHeight +
-                            " alpha=" + MICRO_WINDOW_ALPHA
+                            " button_dp=" + FLOATING_BUTTON_DP
                     )
                     true
                 }.getOrElse {
@@ -153,7 +196,7 @@ object WebViewOverlayHost {
                 root.layoutParams as? WindowManager.LayoutParams
                     ?: return@synchronized false
 
-            val newAlpha = if (hidden) 0f else MICRO_WINDOW_ALPHA
+            val newAlpha = if (hidden) 0f else 1f
             if (params.alpha == newAlpha && captureHidden == hidden) {
                 return@synchronized true
             }
@@ -305,7 +348,6 @@ object WebViewOverlayHost {
             hostSide,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -313,7 +355,7 @@ object WebViewOverlayHost {
             gravity = Gravity.BOTTOM or Gravity.END
             x = 0
             y = 0
-            alpha = MICRO_WINDOW_ALPHA
+            alpha = 1f
         }
 
     private fun runOnMainBlocking(
@@ -338,6 +380,5 @@ object WebViewOverlayHost {
         return latch.await(timeoutMs, TimeUnit.MILLISECONDS) && result
     }
 
-    private const val MICRO_WINDOW_FRACTION = 0.001f
-    private const val MICRO_WINDOW_ALPHA = 0.01f
+    private const val FLOATING_BUTTON_DP = 48f
 }
