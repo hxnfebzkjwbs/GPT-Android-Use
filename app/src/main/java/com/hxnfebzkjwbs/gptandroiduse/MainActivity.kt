@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -46,6 +47,7 @@ class MainActivity : AppCompatActivity() {
     private var webPageLoading = false
     private var webPageLoaded = false
     private var bridgeReloadInFlight = false
+    private var bridgeHydrationStartedAt = 0L
     private val readinessHandler = Handler(Looper.getMainLooper())
     private val readinessRetryRunnable = Runnable {
         if (isFinishing || isDestroyed) return@Runnable
@@ -344,17 +346,50 @@ class MainActivity : AppCompatActivity() {
         if (webPageLoading || !webPageLoaded) return
 
         bridgeCheckInFlight = true
-        pageAdbBridge.checkBridgeReady { ok, _ ->
+        pageAdbBridge.checkBridgeReady { ok, detail ->
             runOnUiThread {
                 bridgeCheckInFlight = false
                 bridgeReady = ok
                 updateComposerEnabled()
                 updateConnectionStatus()
 
-                if (!ok) {
-                    // A loaded page with an unhealthy Bridge is not healed by
-                    // injecting the same script again. The next retry reloads
-                    // the page and waits for a fresh onPageFinished().
+                if (ok) {
+                    AppLog.add(
+                        "BRIDGE_READY",
+                        "composer ready after " +
+                            (SystemClock.elapsedRealtime() -
+                                bridgeHydrationStartedAt) +
+                            "ms"
+                    )
+                    return@runOnUiThread
+                }
+
+                val elapsed =
+                    SystemClock.elapsedRealtime() -
+                        bridgeHydrationStartedAt
+
+                if (
+                    bridgeHydrationStartedAt > 0L &&
+                    elapsed < BRIDGE_HYDRATION_GRACE_MS
+                ) {
+                    AppLog.add(
+                        "BRIDGE_WAIT",
+                        "health=" + detail +
+                            " elapsed_ms=" + elapsed +
+                            "; waiting for ChatGPT hydration"
+                    )
+                    readinessHandler.postDelayed(
+                        {
+                            checkBridgeReadinessAfterPageLoad()
+                        },
+                        BRIDGE_HEALTH_POLL_MS
+                    )
+                } else {
+                    AppLog.add(
+                        "BRIDGE_WAIT",
+                        "hydration timeout health=" + detail +
+                            " elapsed_ms=" + elapsed
+                    )
                     scheduleReadinessRetry()
                 }
             }
@@ -365,6 +400,16 @@ class MainActivity : AppCompatActivity() {
         if (bridgeReady) return
         if (webPageLoading || bridgeReloadInFlight) return
 
+        if (webPageLoaded && bridgeHydrationStartedAt > 0L) {
+            val elapsed =
+                SystemClock.elapsedRealtime() -
+                    bridgeHydrationStartedAt
+            if (elapsed < BRIDGE_HYDRATION_GRACE_MS) {
+                checkBridgeReadinessAfterPageLoad()
+                return
+            }
+        }
+
         val currentUrl = binding.chatWebView.url.orEmpty()
         if (currentUrl.isBlank() || currentUrl == "about:blank") {
             return
@@ -372,10 +417,11 @@ class MainActivity : AppCompatActivity() {
 
         bridgeReloadInFlight = true
         webPageLoaded = false
+        bridgeHydrationStartedAt = 0L
         bridgeCheckInFlight = false
         AppLog.add(
             "BRIDGE_RECOVERY",
-            "Bridge not ready; reloading WebView and waiting for onPageFinished"
+            "hydration timed out; reloading WebView and waiting for onPageFinished"
         )
         binding.chatWebView.reload()
     }
@@ -507,7 +553,9 @@ class MainActivity : AppCompatActivity() {
                 binding.webViewContainer
             )
             binding.chatWebView.resumeTimers()
-            pageAdbBridge.installForCurrentPage()
+            if (webPageLoaded && !webPageLoading) {
+                pageAdbBridge.installForCurrentPage()
+            }
         }
         checkAdbReadiness()
         if (!bridgeReady) recoverBridgeByReload()
@@ -592,6 +640,7 @@ class MainActivity : AppCompatActivity() {
             ) {
                 webPageLoading = true
                 webPageLoaded = false
+                bridgeHydrationStartedAt = 0L
                 bridgeReady = false
                 bridgeCheckInFlight = false
                 pageAdbBridge.onTopLevelUrlChanged(url)
@@ -605,12 +654,20 @@ class MainActivity : AppCompatActivity() {
                 webPageLoaded = true
                 bridgeReloadInFlight = false
                 bridgeReady = false
+                bridgeHydrationStartedAt =
+                    SystemClock.elapsedRealtime()
                 pageAdbBridge.onTopLevelUrlChanged(url)
 
-                // Injection is deliberately performed only after the page load
-                // has completed. Health is checked only after this injection.
+                // Inject once after the document load completes. ChatGPT is a
+                // SPA, so onPageFinished can occur before React has created the
+                // composer. Give hydration time before considering a reload.
                 pageAdbBridge.installForCurrentPage()
-                checkBridgeReadinessAfterPageLoad()
+                readinessHandler.postDelayed(
+                    {
+                        checkBridgeReadinessAfterPageLoad()
+                    },
+                    BRIDGE_INITIAL_HEALTH_DELAY_MS
+                )
                 scheduleReadinessRetry()
                 super.onPageFinished(view, url)
             }
@@ -701,5 +758,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val CHATGPT_URL = "https://chatgpt.com/"
         private const val READINESS_RETRY_MS = 2_000L
+        private const val BRIDGE_INITIAL_HEALTH_DELAY_MS = 750L
+        private const val BRIDGE_HEALTH_POLL_MS = 750L
+        private const val BRIDGE_HYDRATION_GRACE_MS = 10_000L
     }
 }

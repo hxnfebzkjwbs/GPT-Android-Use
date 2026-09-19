@@ -189,20 +189,17 @@ class WebAdbBridge(
         }
 
         webView.post {
-            installForCurrentPage()
-            webView.postDelayed({
-                webView.evaluateJavascript(
-                    "window.__gptAndroidUseBridgeHealth ? " +
-                        "window.__gptAndroidUseBridgeHealth() : 'not-ready';"
-                ) { raw ->
-                    val result = raw
-                        ?.trim()
-                        ?.removePrefix("\"")
-                        ?.removeSuffix("\"")
-                        ?: "unknown"
-                    onComplete(result == "ready", result)
-                }
-            }, BRIDGE_HEALTH_DELAY_MS)
+            webView.evaluateJavascript(
+                "window.__gptAndroidUseBridgeHealth ? " +
+                    "window.__gptAndroidUseBridgeHealth() : 'not-ready';"
+            ) { raw ->
+                val result = raw
+                    ?.trim()
+                    ?.removePrefix("\"")
+                    ?.removeSuffix("\"")
+                    ?: "unknown"
+                onComplete(result == "ready", result)
+            }
         }
     }
 
@@ -2041,6 +2038,5 @@ class WebAdbBridge(
         private const val IMAGE_JS_CHUNK_CHARS = 48_000
         private const val MAX_IMAGE_ATTACH_ATTEMPTS = 4
         private const val MAX_NATIVE_MESSAGE_CHARS = 24_000
-        private const val BRIDGE_HEALTH_DELAY_MS = 250L
     }
 }
