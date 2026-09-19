@@ -6,6 +6,7 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -25,8 +26,7 @@ object WebViewOverlayHost {
     private val lock = Any()
     private var windowManager: WindowManager? = null
     private var hostedWebView: WebView? = null
-    private var webWindowRoot: FrameLayout? = null
-    private var iconWindowRoot: FrameLayout? = null
+    private var overlayRoot: FrameLayout? = null
     private var overlayAttached = false
     private var captureHidden = false
     private var backgroundWidth = 0
@@ -65,10 +65,6 @@ object WebViewOverlayHost {
                         screenWidth,
                         screenHeight
                     )
-                    updateBackgroundWindowPosition(
-                        screenWidth,
-                        screenHeight
-                    )
                     floatingButton?.let { applyFloatingStatus(it) }
                     webView.resumeTimers()
                     webView.onResume()
@@ -77,15 +73,7 @@ object WebViewOverlayHost {
 
                 (webView.parent as? ViewGroup)?.removeView(webView)
 
-                val webRoot = FrameLayout(appContext).apply {
-                    clipChildren = true
-                    clipToPadding = true
-                    importantForAccessibility =
-                        FrameLayout.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                    alpha = 1f
-                }
-
-                val iconRoot = FrameLayout(appContext).apply {
+                val root = FrameLayout(appContext).apply {
                     clipChildren = true
                     clipToPadding = true
                     importantForAccessibility =
@@ -96,11 +84,12 @@ object WebViewOverlayHost {
                 webView.importantForAccessibility =
                     WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 webView.visibility = WebView.VISIBLE
-                webView.layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                webRoot.addView(webView)
+                webView.layoutParams =
+                    backgroundWebViewLayoutParams(
+                        screenWidth,
+                        screenHeight
+                    )
+                root.addView(webView)
 
                 val bubble = FloatingStatusView(appContext).apply {
                     isClickable = true
@@ -109,7 +98,7 @@ object WebViewOverlayHost {
                     setTaskStatus(floatingStatus)
                 }
 
-                iconRoot.addView(
+                root.addView(
                     bubble,
                     FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -118,33 +107,20 @@ object WebViewOverlayHost {
                 )
 
                 return@synchronized runCatching {
-                    // Keep the full-size ChatGPT WebView in its own overlay
-                    // window completely outside the physical display.
                     wm.addView(
-                        webRoot,
-                        createBackgroundWindowLayoutParams(
-                            screenWidth,
-                            screenHeight
-                        )
-                    )
-
-                    // The user-visible overlay is a separate tiny window.
-                    // Moving it never changes the WebView's window/viewport.
-                    wm.addView(
-                        iconRoot,
-                        createIconWindowLayoutParams(hostSide)
+                        root,
+                        createMicroWindowLayoutParams(hostSide)
                     )
 
                     windowManager = wm
                     hostedWebView = webView
-                    webWindowRoot = webRoot
-                    iconWindowRoot = iconRoot
+                    overlayRoot = root
                     floatingButton = bubble
                     overlayAttached = true
                     installFloatingButtonTouch(
                         appContext,
                         wm,
-                        iconRoot,
+                        root,
                         bubble,
                         screenWidth,
                         screenHeight,
@@ -161,17 +137,14 @@ object WebViewOverlayHost {
 
                     AppLog.add(
                         "MICRO_OVERLAY",
-                        "separate-windows icon=" + hostSide + "x" + hostSide +
+                        "host=" + hostSide + "x" + hostSide +
                             " webview=" + screenWidth + "x" + screenHeight +
-                            " web_x=" + offscreenWebX(screenWidth)
+                            " button_dp=" + FLOATING_BUTTON_DP
                     )
                     true
                 }.getOrElse {
-                    runCatching { wm.removeViewImmediate(iconRoot) }
-                    runCatching { wm.removeViewImmediate(webRoot) }
-                    runCatching { webRoot.removeView(webView) }
-                    webWindowRoot = null
-                    iconWindowRoot = null
+                    root.removeView(webView)
+                    overlayRoot = null
                     floatingButton = null
                     hostedWebView = webView
                     overlayAttached = false
@@ -218,33 +191,35 @@ object WebViewOverlayHost {
         screenHeight: Int,
         hostSide: Int
     ) {
-        var currentRawX = 0f
-        var currentRawY = 0f
-        var dragStartRawX = 0f
-        var dragStartRawY = 0f
-        var windowStartX = 0
-        var windowStartY = 0
         var pointerDown = false
         var dragUnlocked = false
+        var downAt = 0L
+        var latestRawX = 0f
+        var latestRawY = 0f
+        var touchOffsetX = 0f
+        var touchOffsetY = 0f
 
         bubble.isHapticFeedbackEnabled = true
 
-        val longPressRunnable = Runnable {
-            if (!pointerDown) return@Runnable
+        fun unlockDrag(rawX: Float, rawY: Float) {
+            if (!pointerDown || dragUnlocked) return
 
             val params =
                 root.layoutParams as? WindowManager.LayoutParams
-                    ?: return@Runnable
+                    ?: return
 
-            // Exactly two seconds after ACTION_DOWN, while the finger is
-            // still held: vibrate once and begin drag tracking from the
-            // finger's current position. Movement before this moment neither
-            // moves the bubble nor cancels the timer.
             dragUnlocked = true
-            dragStartRawX = currentRawX
-            dragStartRawY = currentRawY
-            windowStartX = params.x
-            windowStartY = params.y
+
+            // Capture the finger's position inside the stationary icon at the
+            // exact unlock moment. After this, every MOVE maps the window
+            // directly to the finger, so there is no threshold and no drift.
+            val left =
+                screenWidth - hostSide - params.x
+            val top =
+                screenHeight - hostSide - params.y
+            touchOffsetX = rawX - left
+            touchOffsetY = rawY - top
+
             bubble.alpha = 1f
 
             val hapticDone =
@@ -258,8 +233,14 @@ object WebViewOverlayHost {
 
             AppLog.add(
                 "MICRO_OVERLAY",
-                "drag unlocked after " + FLOATING_DRAG_LONG_PRESS_MS + "ms"
+                "drag unlocked after " +
+                    (SystemClock.uptimeMillis() - downAt) +
+                    "ms"
             )
+        }
+
+        val longPressRunnable = Runnable {
+            unlockDrag(latestRawX, latestRawY)
         }
 
         bubble.setOnTouchListener { _, event ->
@@ -267,12 +248,14 @@ object WebViewOverlayHost {
                 root.layoutParams as? WindowManager.LayoutParams
                     ?: return@setOnTouchListener false
 
+            latestRawX = event.rawX
+            latestRawY = event.rawY
+
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    currentRawX = event.rawX
-                    currentRawY = event.rawY
                     pointerDown = true
                     dragUnlocked = false
+                    downAt = SystemClock.uptimeMillis()
                     bubble.alpha = 0.72f
 
                     mainHandler.removeCallbacks(longPressRunnable)
@@ -284,21 +267,43 @@ object WebViewOverlayHost {
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    currentRawX = event.rawX
-                    currentRawY = event.rawY
+                    if (
+                        !dragUnlocked &&
+                        pointerDown &&
+                        SystemClock.uptimeMillis() - downAt >=
+                            FLOATING_DRAG_LONG_PRESS_MS
+                    ) {
+                        unlockDrag(event.rawX, event.rawY)
+                    }
 
                     if (dragUnlocked) {
-                        val dx = event.rawX - dragStartRawX
-                        val dy = event.rawY - dragStartRawY
-                        val maxX = (screenWidth - hostSide).coerceAtLeast(0)
-                        val maxY = (screenHeight - hostSide).coerceAtLeast(0)
+                        val desiredLeft =
+                            event.rawX - touchOffsetX
+                        val desiredTop =
+                            event.rawY - touchOffsetY
 
-                        // Window uses END|BOTTOM gravity, so x/y are distances
-                        // from the right/bottom edges; subtract finger deltas.
+                        val maxLeft =
+                            (screenWidth - hostSide)
+                                .coerceAtLeast(0)
+                        val maxTop =
+                            (screenHeight - hostSide)
+                                .coerceAtLeast(0)
+
+                        val clampedLeft =
+                            desiredLeft
+                                .roundToInt()
+                                .coerceIn(0, maxLeft)
+                        val clampedTop =
+                            desiredTop
+                                .roundToInt()
+                                .coerceIn(0, maxTop)
+
+                        // END|BOTTOM gravity stores distances from the right
+                        // and bottom edges.
                         params.x =
-                            (windowStartX - dx.roundToInt()).coerceIn(0, maxX)
+                            screenWidth - hostSide - clampedLeft
                         params.y =
-                            (windowStartY - dy.roundToInt()).coerceIn(0, maxY)
+                            screenHeight - hostSide - clampedTop
 
                         overlayX = params.x
                         overlayY = params.y
@@ -311,15 +316,22 @@ object WebViewOverlayHost {
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    val heldLongEnough =
+                        SystemClock.uptimeMillis() - downAt >=
+                            FLOATING_DRAG_LONG_PRESS_MS
+
+                    if (!dragUnlocked && heldLongEnough) {
+                        unlockDrag(event.rawX, event.rawY)
+                    }
+
                     val wasDragging = dragUnlocked
                     pointerDown = false
                     dragUnlocked = false
                     mainHandler.removeCallbacks(longPressRunnable)
                     bubble.alpha = 1f
 
-                    // A release before the two-second unlock remains the
-                    // normal short-click behavior. A release after unlock
-                    // simply fixes the bubble at its current position.
+                    // Before 2 s: normal tap. After 2 s: release only fixes
+                    // the floating icon at its current position.
                     if (!wasDragging) {
                         openMainActivity(context)
                     }
@@ -391,38 +403,30 @@ object WebViewOverlayHost {
             return
         }
 
-        webView.layoutParams = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
+        webView.layoutParams =
+            backgroundWebViewLayoutParams(
+                width.coerceAtLeast(1),
+                height.coerceAtLeast(1)
+            )
         backgroundWidth = width.coerceAtLeast(1)
         backgroundHeight = height.coerceAtLeast(1)
         webView.requestLayout()
     }
 
-    private fun updateBackgroundWindowPosition(
+    private fun backgroundWebViewLayoutParams(
         width: Int,
         height: Int
-    ) {
-        val root = webWindowRoot ?: return
-        val wm = windowManager ?: return
-        val params =
-            root.layoutParams as? WindowManager.LayoutParams
-                ?: return
-
-        params.width = width.coerceAtLeast(1)
-        params.height = height.coerceAtLeast(1)
-        params.gravity = Gravity.TOP or Gravity.START
-        params.x = offscreenWebX(width)
-        params.y = 0
-
-        runCatching {
-            wm.updateViewLayout(root, params)
+    ): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(
+            width.coerceAtLeast(1),
+            height.coerceAtLeast(1)
+        ).apply {
+            // Keep the full-size WebView attached and running, but move its
+            // entire rendered surface to the left of the tiny overlay host.
+            // The parent clips children, so no ChatGPT pixels are visible
+            // behind the floating control.
+            leftMargin = -width.coerceAtLeast(1) - 1
         }
-    }
-
-    private fun offscreenWebX(screenWidth: Int): Int =
-        -screenWidth.coerceAtLeast(1) - OFFSCREEN_WEB_MARGIN_PX
 
     fun setHiddenForScreenshot(
         context: Context,
@@ -431,7 +435,7 @@ object WebViewOverlayHost {
     ): Boolean = runOnMainBlocking(timeoutMs) {
         synchronized(lock) {
             if (!overlayAttached) return@synchronized false
-            val root = iconWindowRoot ?: return@synchronized false
+            val root = overlayRoot ?: return@synchronized false
             val wm = windowManager ?: return@synchronized false
             val params =
                 root.layoutParams as? WindowManager.LayoutParams
@@ -507,12 +511,8 @@ object WebViewOverlayHost {
     fun restore(webView: WebView, container: FrameLayout) {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
-                iconWindowRoot?.let { root ->
-                    runCatching {
-                        windowManager?.removeViewImmediate(root)
-                    }
-                }
-                webWindowRoot?.let { root ->
+                val root = overlayRoot
+                if (root != null) {
                     runCatching {
                         windowManager?.removeViewImmediate(root)
                     }
@@ -528,8 +528,7 @@ object WebViewOverlayHost {
 
             overlayAttached = false
             captureHidden = false
-            webWindowRoot = null
-            iconWindowRoot = null
+            overlayRoot = null
             floatingButton = null
             backgroundWidth = 0
             backgroundHeight = 0
@@ -568,12 +567,7 @@ object WebViewOverlayHost {
     fun release(webView: WebView) {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
-                iconWindowRoot?.let { root ->
-                    runCatching {
-                        windowManager?.removeViewImmediate(root)
-                    }
-                }
-                webWindowRoot?.let { root ->
+                overlayRoot?.let { root ->
                     runCatching {
                         windowManager?.removeViewImmediate(root)
                     }
@@ -587,35 +581,14 @@ object WebViewOverlayHost {
 
             overlayAttached = false
             captureHidden = false
-            webWindowRoot = null
-            iconWindowRoot = null
+            overlayRoot = null
             floatingButton = null
             backgroundWidth = 0
             backgroundHeight = 0
         }
     }
 
-    private fun createBackgroundWindowLayoutParams(
-        width: Int,
-        height: Int
-    ): WindowManager.LayoutParams =
-        WindowManager.LayoutParams(
-            width.coerceAtLeast(1),
-            height.coerceAtLeast(1),
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = offscreenWebX(width)
-            y = 0
-            alpha = 1f
-        }
-
-    private fun createIconWindowLayoutParams(
+    private fun createMicroWindowLayoutParams(
         hostSide: Int
     ): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
@@ -658,5 +631,4 @@ object WebViewOverlayHost {
     private const val FLOATING_BUTTON_DP = 48f
     private const val FLOATING_DRAG_LONG_PRESS_MS = 2_000L
     private const val FLOATING_DRAG_VIBRATION_MS = 45L
-    private const val OFFSCREEN_WEB_MARGIN_PX = 32
 }
