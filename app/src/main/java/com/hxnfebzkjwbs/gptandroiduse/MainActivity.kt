@@ -102,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        SystemBarInsets.apply(this, binding.root)
         supportActionBar?.hide()
 
         pageAdbBridge = WebAdbBridge(

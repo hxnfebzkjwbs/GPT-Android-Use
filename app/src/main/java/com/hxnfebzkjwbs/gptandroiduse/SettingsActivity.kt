@@ -15,6 +15,7 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        SystemBarInsets.apply(this, binding.root)
         supportActionBar?.hide()
 
         val adbReady = intent.getBooleanExtra(EXTRA_ADB_READY, false)

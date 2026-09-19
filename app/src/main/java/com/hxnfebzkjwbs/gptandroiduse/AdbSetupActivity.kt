@@ -28,6 +28,7 @@ class AdbSetupActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityAdbSetupBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        SystemBarInsets.apply(this, binding.root)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         supportActionBar?.title = "Wireless ADB"
 

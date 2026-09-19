@@ -21,7 +21,13 @@ object AppLog {
 
     @Synchronized
     fun snapshot(): String =
-        if (entries.isEmpty()) "(no log entries)" else entries.joinToString("\n\n")
+        if (entries.isEmpty()) {
+            "(no log entries)"
+        } else {
+            entries.toList()
+                .asReversed()
+                .joinToString("\n\n")
+        }
 
     @Synchronized
     fun clear() {

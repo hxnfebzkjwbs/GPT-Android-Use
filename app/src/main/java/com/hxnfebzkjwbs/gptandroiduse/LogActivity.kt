@@ -100,6 +100,7 @@ class LogActivity : AppCompatActivity() {
             )
         )
         setContentView(root)
+        SystemBarInsets.apply(this, root)
         refresh()
     }
 
