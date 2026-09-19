@@ -434,12 +434,50 @@ class WebAdbBridge(
 
     private fun postResult(requestId: String, ok: Boolean, output: String) {
         val safeOutput = output.take(MAX_RESULT_CHARS)
+        val screenshot = adb.consumePendingScreenshot()
+
         AppLog.add(
             "ADB_RESULT",
             "id=" + requestId + " status=" + (if (ok) "OK" else "ERROR") +
-                "\n" + safeOutput
+                "\n" + safeOutput +
+                if (screenshot != null) {
+                    "\n[image attachment " +
+                        screenshot.width + "x" + screenshot.height + "]"
+                } else {
+                    ""
+                }
         )
+
         webView.post {
+            if (screenshot != null) {
+                val startJs =
+                    "window.__gptAndroidUseBridgeImageStart && " +
+                    "window.__gptAndroidUseBridgeImageStart(" +
+                    JSONObject.quote(requestId) + "," +
+                    JSONObject.quote(screenshot.mimeType) + "," +
+                    JSONObject.quote(screenshot.fileName) + "," +
+                    screenshot.width + "," +
+                    screenshot.height + ");"
+                webView.evaluateJavascript(startJs, null)
+
+                screenshot.base64Jpeg
+                    .chunked(IMAGE_JS_CHUNK_CHARS)
+                    .forEach { chunk ->
+                        val chunkJs =
+                            "window.__gptAndroidUseBridgeImageChunk && " +
+                            "window.__gptAndroidUseBridgeImageChunk(" +
+                            JSONObject.quote(requestId) + "," +
+                            JSONObject.quote(chunk) + ");"
+                        webView.evaluateJavascript(chunkJs, null)
+                    }
+
+                val endJs =
+                    "window.__gptAndroidUseBridgeImageEnd && " +
+                    "window.__gptAndroidUseBridgeImageEnd(" +
+                    JSONObject.quote(requestId) + ");"
+                webView.evaluateJavascript(endJs, null)
+            }
+
             val js = "window.__gptAndroidUseBridgeResult && " +
                 "window.__gptAndroidUseBridgeResult(" +
                 JSONObject.quote(requestId) + "," +
@@ -477,7 +515,8 @@ class WebAdbBridge(
             'The native bridge rejects commands that do not contain the STEP line. ' +
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
-            'Never tap guessed coordinates. An input tap must be justified either by a visible clickable=true node in UI_SNAPSHOT or by a matching text region and bounds in VISUAL_SNAPSHOT. ' +
+            'Never tap guessed coordinates. First use UI_SNAPSHOT/OCR. If OCR cannot identify a visual-only target such as an icon or photo thumbnail, request exactly "screencap -p"; the next ADB_RESULT will include the real target-app screenshot as an image attachment. ' +
+            'After receiving an attached screenshot, inspect the image itself and return coordinates in its stated image_size coordinate system. ' +
             'If the desired control is not visible, use a semantically relevant and validated navigation control from the latest snapshot to continue toward the goal; do not probe random locations. ' +
             'An empty UIAutomator tree followed by OCR fallback is ONE observation attempt, not two failed attempts. ' +
             'Do not stop merely because the exact target control is not yet visible. Stop only after TWO distinct state-changing navigation actions, each followed by a fresh snapshot, fail to produce progress AND no new validated navigation candidate remains. ' +
@@ -486,7 +525,7 @@ class WebAdbBridge(
             'For UI automation, use exactly "uiautomator dump" when you need to inspect the target screen. ' +
             'Do not cat UI XML files, do not choose your own dump path, and do not use shell redirection such as > /dev/null; ' +
             'the native bridge captures the hierarchy in memory and returns UI_SNAPSHOT itself. ' +
-            'UI-changing commands may also return UI_SNAPSHOT and VISUAL_SNAPSHOT automatically; use their text, resource ids, OCR regions and bounds to choose the next validated step. ' +
+            'UI-changing commands may return UI_SNAPSHOT and OCR automatically. Escalate to screencap -p only when OCR is insufficient for a visual-only target. ' +
             'Keep STEP to one short sentence. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
@@ -507,6 +546,7 @@ class WebAdbBridge(
 
           const internalQueue = [];
           const sentInternalIds = new Set();
+          const bridgeImages = new Map();
 
           function nativeStatus(stage, detail) {
             try {
@@ -930,6 +970,19 @@ class WebAdbBridge(
           }
 
           function attachProtocolToComposer() {
+            if (item.image && !item.imageAttached) {
+              const attached = attachBridgeImage(item.image);
+              if (!attached) {
+                nativeStatus('INTERNAL_WAIT_IMAGE_ATTACH', item.id);
+                scheduleInternalFlush(500);
+                return;
+              }
+              item.imageAttached = true;
+              nativeStatus('INTERNAL_IMAGE_ATTACHED', item.id);
+              scheduleInternalFlush(900);
+              return;
+            }
+
             const editor = findComposer();
             if (!editor) {
               nativeStatus('COMPOSER_MISSING', 'while attaching protocol');
@@ -1011,7 +1064,7 @@ class WebAdbBridge(
             }, Math.max(100, delayMs || 250));
           }
 
-          function enqueueInternalMessage(id, text, kind, transactionId) {
+          function enqueueInternalMessage(id, text, kind, transactionId, image) {
             if (!enabled || !id || !text) return false;
             if (sentInternalIds.has(id) || internalQueue.some(item => item.id === id)) {
               nativeStatus('INTERNAL_DUPLICATE_IGNORED', id);
@@ -1022,6 +1075,8 @@ class WebAdbBridge(
               text: text,
               kind: kind || 'internal',
               transactionId: transactionId || '',
+              image: image || null,
+              imageAttached: !image,
               prepared: false,
               queuedAt: Date.now()
             });
@@ -1051,6 +1106,74 @@ class WebAdbBridge(
               activeTransaction.lastProgressAt = Date.now();
               nativeStatus('TX_RESULT_SENT', activeTransaction.id);
               scheduleTransactionAdvance(250);
+            }
+          }
+
+          function bridgeImageToFile(image) {
+            if (!image || !image.base64) return null;
+            try {
+              const binary = atob(image.base64);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              return new File(
+                [bytes],
+                image.name || 'device-screen.jpg',
+                { type: image.mime || 'image/jpeg' }
+              );
+            } catch (_) {
+              return null;
+            }
+          }
+
+          function attachBridgeImage(image) {
+            const file = bridgeImageToFile(image);
+            if (!file) return false;
+
+            const inputs = Array.from(
+              document.querySelectorAll('input[type="file"]')
+            );
+            const input =
+              inputs.find(el =>
+                String(el.accept || '').toLowerCase().includes('image')
+              ) ||
+              inputs[0] ||
+              null;
+
+            if (input) {
+              try {
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                input.files = transfer.files;
+                input.dispatchEvent(
+                  new Event('input', { bubbles: true })
+                );
+                input.dispatchEvent(
+                  new Event('change', { bubbles: true })
+                );
+                return true;
+              } catch (_) {}
+            }
+
+            const editor = findComposer();
+            if (!editor) return false;
+
+            try {
+              const transfer = new DataTransfer();
+              transfer.items.add(file);
+              ['dragenter', 'dragover', 'drop'].forEach(type => {
+                editor.dispatchEvent(
+                  new DragEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    dataTransfer: transfer
+                  })
+                );
+              });
+              return true;
+            } catch (_) {
+              return false;
             }
           }
 
@@ -1138,6 +1261,32 @@ class WebAdbBridge(
             if (internalQueue.length) scheduleInternalFlush(250);
           }
 
+          window.__gptAndroidUseBridgeImageStart =
+            function(id, mime, name, width, height) {
+              bridgeImages.set(id, {
+                mime: mime || 'image/jpeg',
+                name: name || 'device-screen.jpg',
+                width: Number(width || 0),
+                height: Number(height || 0),
+                base64: ''
+              });
+            };
+
+          window.__gptAndroidUseBridgeImageChunk = function(id, chunk) {
+            const image = bridgeImages.get(id);
+            if (!image) return;
+            image.base64 += String(chunk || '');
+          };
+
+          window.__gptAndroidUseBridgeImageEnd = function(id) {
+            const image = bridgeImages.get(id);
+            if (!image) return;
+            nativeStatus(
+              'BRIDGE_IMAGE_READY',
+              id + ':' + image.width + 'x' + image.height
+            );
+          };
+
           window.__gptAndroidUseBridgeResult = function(id, ok, output) {
             if (
               !activeTransaction ||
@@ -1157,17 +1306,21 @@ class WebAdbBridge(
               'The device command has finished. Inspect this result before deciding the next action. ' +
               'If the original request still needs device work, the next code block MUST be: ADB_EXEC, then STEP: <one short Chinese sentence>, then exactly ONE command. ' +
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
-              'Do not batch multiple commands. Never tap guessed coordinates; input tap must correspond to a clickable=true UI node or an OCR text region in the latest snapshot. ' +
+              'Do not batch multiple commands. Use UI/OCR first. If the needed target is visual-only and OCR cannot locate it, request screencap -p so the next ADB_RESULT includes the real screenshot image. ' +
               'Do not count repeated screen inspections as failed navigation. If the exact target is absent but validated navigation candidates remain, continue toward the goal. ' +
               'Stop only after two distinct state-changing navigation actions fail to make progress and no new validated navigation candidate remains. ' +
               'For screen inspection, use only "uiautomator dump"; never cat dump files or add shell redirection; the hierarchy is captured in memory. ' +
               'Otherwise answer normally.';
 
+            const image = bridgeImages.get(id) || null;
+            if (image) bridgeImages.delete(id);
+
             enqueueInternalMessage(
               'result:' + id,
               message,
               'result',
-              txId
+              txId,
+              image
             );
           };
 
@@ -1362,5 +1515,6 @@ class WebAdbBridge(
         private const val MAX_RESULT_CHARS = 12_000
         private const val WIRELESS_ADB_RESTART_DELAY_MS = 1_500L
         private const val COMMAND_APPROVAL_TIMEOUT_SECONDS = 120L
+        private const val IMAGE_JS_CHUNK_CHARS = 48_000
     }
 }

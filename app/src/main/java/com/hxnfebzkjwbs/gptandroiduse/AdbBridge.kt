@@ -12,6 +12,7 @@ import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import io.github.muntashirakon.adb.AdbStream
 import io.github.muntashirakon.adb.LocalServices
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
@@ -25,6 +26,14 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
+
+data class ScreenshotAttachment(
+    val base64Jpeg: String,
+    val width: Int,
+    val height: Int,
+    val fileName: String = "device-screen.jpg",
+    val mimeType: String = "image/jpeg"
+)
 
 interface AdbBridge {
     fun pair(host: String, port: Int, pairingCode: String): Result<Unit>
@@ -42,6 +51,7 @@ interface AdbBridge {
     fun disconnect()
     fun diagnostics(): String
     fun observeUi(verifyTarget: Boolean = true): Result<String>
+    fun consumePendingScreenshot(): ScreenshotAttachment?
 }
 
 class AndroidAdbBridge(private val context: Context) : AdbBridge {
@@ -55,6 +65,10 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     @Volatile private var lastForegroundPackage = "unknown"
     @Volatile private var lastUiObservedAt = 0L
     @Volatile private var lastClickableTargets: List<UiTapTarget> = emptyList()
+    @Volatile private var pendingScreenshot: ScreenshotAttachment? = null
+    @Volatile private var lastVisualSnapshotAt = 0L
+    @Volatile private var lastVisualWidth = 0
+    @Volatile private var lastVisualHeight = 0
 
     private data class UiTapTarget(
         val left: Int,
@@ -163,6 +177,26 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             when {
                 normalized.startsWith("uiautomator dump", ignoreCase = true) -> {
                     observeUi().getOrThrow()
+                }
+
+                normalized.equals("screencap -p", ignoreCase = true) -> {
+                    requireTargetForeground()
+                    val attachment = captureScreenshotAttachment()
+                    pendingScreenshot = attachment
+                    lastVisualSnapshotAt = System.currentTimeMillis()
+                    lastVisualWidth = attachment.width
+                    lastVisualHeight = attachment.height
+                    buildString {
+                        appendLine("SCREENSHOT_ATTACHED")
+                        appendLine(
+                            "image_size: " +
+                                attachment.width + "x" + attachment.height
+                        )
+                        appendLine("attachment: " + attachment.fileName)
+                        append(
+                            "Use the attached image itself to choose the next coordinate."
+                        )
+                    }
                 }
 
                 isTargetInteractionCommand(normalized) -> {
@@ -294,6 +328,12 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         result
     }.onFailure {
         recordFailure("ui_observe", it)
+    }
+
+    override fun consumePendingScreenshot(): ScreenshotAttachment? {
+        val value = pendingScreenshot
+        pendingScreenshot = null
+        return value
     }
 
     override fun disconnect() {
@@ -454,16 +494,26 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }
 
         val target = lastClickableTargets.firstOrNull { it.contains(x, y) }
-            ?: throw IllegalStateException(
-                "Tap rejected: (" + x + "," + y + ") is not inside any " +
-                    "validated clickable UI node or OCR text region from the latest snapshot. " +
-                    "Do not guess coordinates; inspect the UI again."
+        val visualAge = System.currentTimeMillis() - lastVisualSnapshotAt
+        val recentScreenshot =
+            lastVisualSnapshotAt > 0L &&
+                visualAge <= TAP_SNAPSHOT_MAX_AGE_MS &&
+                x in 0 until lastVisualWidth &&
+                y in 0 until lastVisualHeight
+
+        if (target == null && !recentScreenshot) {
+            throw IllegalStateException(
+                "Tap rejected: (" + x + "," + y + ") is not backed by a " +
+                    "clickable/OCR region or a recent attached screenshot. " +
+                    "Inspect the UI or request screencap -p first."
             )
+        }
 
         lastStage = "tap_validated"
         AppLog.add(
             "ADB_GUARD",
-            "tap=(" + x + "," + y + ") matched " + target.label
+            "tap=(" + x + "," + y + ") matched " +
+                (target?.label ?: "recent_attached_screenshot")
         )
     }
 
@@ -755,6 +805,72 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }.take(MAX_UI_RESULT_CHARS)
     }
 
+    private fun captureScreenshotAttachment(): ScreenshotAttachment {
+        lastStage = "ui_screenshot_capture"
+
+        val overlayHidden = WebViewOverlayHost.setHiddenForScreenshot(
+            context,
+            true
+        )
+        if (overlayHidden) {
+            Thread.sleep(SCREENSHOT_OVERLAY_SETTLE_MS)
+        }
+
+        val rawBase64 = try {
+            runShellUnchecked("screencap -p | base64")
+        } finally {
+            if (overlayHidden) {
+                WebViewOverlayHost.setHiddenForScreenshot(context, false)
+            }
+        }
+
+        val encodedPng = rawBase64
+            .lineSequence()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotBlank() &&
+                    line.matches(Regex("^[A-Za-z0-9+/=]+$"))
+            }
+            .joinToString("")
+
+        check(encodedPng.isNotBlank()) { "Screenshot base64 output was empty" }
+
+        val pngBytes = Base64.decode(encodedPng, Base64.DEFAULT)
+        val bitmap = BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size)
+            ?: error("Could not decode screenshot PNG")
+
+        try {
+            val jpeg = ByteArrayOutputStream()
+            check(
+                bitmap.compress(
+                    android.graphics.Bitmap.CompressFormat.JPEG,
+                    SCREENSHOT_JPEG_QUALITY,
+                    jpeg
+                )
+            ) {
+                "Could not encode screenshot JPEG"
+            }
+
+            val jpegBytes = jpeg.toByteArray()
+            AppLog.add(
+                "SCREENSHOT",
+                "attached " + bitmap.width + "x" + bitmap.height +
+                    " jpeg_bytes=" + jpegBytes.size
+            )
+
+            return ScreenshotAttachment(
+                base64Jpeg = Base64.encodeToString(
+                    jpegBytes,
+                    Base64.NO_WRAP
+                ),
+                width = bitmap.width,
+                height = bitmap.height
+            )
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private fun captureOcrSnapshot(): String {
         lastStage = "ui_ocr_capture"
 
@@ -923,5 +1039,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val OCR_TIMEOUT_SECONDS = 8L
         private const val MAX_OCR_REGIONS = 120
         private const val SCREENSHOT_OVERLAY_SETTLE_MS = 80L
+        private const val SCREENSHOT_JPEG_QUALITY = 52
     }
 }
