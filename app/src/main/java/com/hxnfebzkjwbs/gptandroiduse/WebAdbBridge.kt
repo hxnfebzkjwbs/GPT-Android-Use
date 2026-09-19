@@ -737,7 +737,7 @@ class WebAdbBridge(
             'Never tap guessed coordinates. First use UI_SNAPSHOT/OCR. If OCR cannot identify a visual-only target such as an icon or photo thumbnail, request exactly "screencap -p"; the next ADB_RESULT will include the real target-app screenshot as an image attachment. ' +
             'After receiving an attached screenshot, inspect the image itself and return coordinates in its stated image_size coordinate system. ' +
             'If the desired control is not visible, use a semantically relevant and validated navigation control from the latest snapshot to continue toward the goal; do not probe random locations. ' +
-            'Do not fail merely because a normal verification or confirmation screen appears. Continue through ordinary verified controls when the required information is already available in the current session or user request. If the screen requires a human-verification challenge or an unavailable external credential, finish with STATUS: 失败 and explain what the user must complete. ' +
+            'Do not infer failure from labels or wording such as CAPTCHA, verification, security check, confirmation, human verification, or similar text. Treat those words only as screen content, not as a failure condition. Continue by observing the actual UI state and using validated visible controls whenever progress is possible. Return STATUS: 失败 only after the task is actually blocked: fresh observations show no valid next action, required information is unavailable, or attempted state-changing actions do not produce progress. ' +
             'An empty UIAutomator tree followed by OCR fallback is ONE observation attempt, not two failed attempts. ' +
             'Do not stop merely because the exact target control is not yet visible. Stop only after TWO distinct state-changing navigation actions, each followed by a fresh snapshot, fail to produce progress AND no new validated navigation candidate remains. ' +
             'For tasks that control another app, the FIRST device command must launch the target app with am start or monkey -p. ' +
@@ -1623,7 +1623,7 @@ class WebAdbBridge(
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
               'Do not batch multiple commands. Use UI/OCR first. If the needed target is visual-only and OCR cannot locate it, request screencap -p so the next ADB_RESULT includes the real screenshot image. ' +
               'Do not count repeated screen inspections as failed navigation. If the exact target is absent but validated navigation candidates remain, continue toward the goal. ' +
-              'Stop only after two distinct state-changing navigation actions fail to make progress and no new validated navigation candidate remains. ' +
+              'Stop only after two distinct state-changing navigation actions fail to make progress and no new validated navigation candidate remains. Do not treat words like CAPTCHA, verification, security check, or human verification as proof of failure; decide from the observed state and available validated actions. ' +
               'For screen inspection, use only "uiautomator dump"; never cat dump files or add shell redirection; the hierarchy is captured in memory. ' +
               'Otherwise answer normally.';
 
