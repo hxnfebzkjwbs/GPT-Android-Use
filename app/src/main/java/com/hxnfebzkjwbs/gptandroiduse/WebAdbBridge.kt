@@ -404,6 +404,11 @@ class WebAdbBridge(
 
     private fun postResult(requestId: String, ok: Boolean, output: String) {
         val safeOutput = output.take(MAX_RESULT_CHARS)
+        AppLog.add(
+            "ADB_RESULT",
+            "id=" + requestId + " status=" + (if (ok) "OK" else "ERROR") +
+                "\n" + safeOutput
+        )
         webView.post {
             val js = "window.__gptAndroidUseBridgeResult && " +
                 "window.__gptAndroidUseBridgeResult(" +
@@ -415,6 +420,7 @@ class WebAdbBridge(
     }
 
     private fun postStatus(text: String) {
+        AppLog.add("BRIDGE", text)
         webView.post { onStatus(text) }
     }
 

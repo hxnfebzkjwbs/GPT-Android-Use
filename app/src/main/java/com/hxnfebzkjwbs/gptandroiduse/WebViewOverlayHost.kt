@@ -41,7 +41,7 @@ object WebViewOverlayHost {
                 gravity = Gravity.TOP or Gravity.START
                 x = 0
                 y = 0
-                alpha = 0.01f
+                alpha = OverlaySettings.getOpacity(context)
             }
 
             return runCatching {
@@ -66,6 +66,17 @@ object WebViewOverlayHost {
                 hostedWebView = null
                 false
             }
+        }
+    }
+
+    fun updateOpacity(context: Context) {
+        synchronized(lock) {
+            if (!overlayAttached) return
+            val webView = hostedWebView ?: return
+            val wm = windowManager ?: return
+            val params = webView.layoutParams as? WindowManager.LayoutParams ?: return
+            params.alpha = OverlaySettings.getOpacity(context)
+            runCatching { wm.updateViewLayout(webView, params) }
         }
     }
 

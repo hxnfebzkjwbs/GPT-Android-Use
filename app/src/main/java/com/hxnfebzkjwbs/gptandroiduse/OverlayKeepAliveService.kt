@@ -29,6 +29,9 @@ class OverlayKeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         showStatusOverlay()
+        if (intent?.action == ACTION_UPDATE_OPACITY) {
+            updateStatusOverlayOpacity()
+        }
         return START_STICKY
     }
 
@@ -107,11 +110,21 @@ class OverlayKeepAliveService : Service() {
             y = dp(28)
         }
 
+        params.alpha = OverlaySettings.getOpacity(this).coerceAtLeast(0.15f)
+
         runCatching {
             wm.addView(view, params)
             windowManager = wm
             statusView = view
         }
+    }
+
+    private fun updateStatusOverlayOpacity() {
+        val view = statusView ?: return
+        val wm = windowManager ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        params.alpha = OverlaySettings.getOpacity(this).coerceAtLeast(0.15f)
+        runCatching { wm.updateViewLayout(view, params) }
     }
 
     private fun removeStatusOverlay() {
@@ -133,5 +146,7 @@ class OverlayKeepAliveService : Service() {
     companion object {
         private const val CHANNEL_ID = "ai_overlay_control"
         private const val NOTIFICATION_ID = 1102
+        const val ACTION_UPDATE_OPACITY =
+            "com.hxnfebzkjwbs.gptandroiduse.UPDATE_OVERLAY_OPACITY"
     }
 }

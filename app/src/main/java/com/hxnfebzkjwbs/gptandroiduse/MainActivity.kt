@@ -9,6 +9,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.SeekBar
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -54,6 +55,7 @@ class MainActivity : AppCompatActivity() {
             applicationContext,
             binding.chatWebView,
             onStatus = { status ->
+                AppLog.add("STATUS", status)
                 binding.bridgeStatusText.text = status
             },
             requestCommandApproval = { command, reason, complete ->
@@ -74,6 +76,7 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         pageAdbBridge.setEnabled(true)
         binding.bridgeStatusText.text = "Bridge: ON"
+        configureOverlayOpacity()
         ensureOverlayCapability()
 
         if (savedInstanceState == null) {
@@ -100,6 +103,10 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, AdbSetupActivity::class.java))
         }
 
+        binding.logsButton.setOnClickListener {
+            startActivity(Intent(this, LogActivity::class.java))
+        }
+
         binding.reloadButton.setOnClickListener {
             binding.chatWebView.reload()
         }
@@ -119,6 +126,42 @@ class MainActivity : AppCompatActivity() {
         } else {
             binding.chatWebView.restoreState(savedInstanceState)
         }
+    }
+
+    private fun configureOverlayOpacity() {
+        val initial = OverlaySettings.getOpacityPercent(this)
+        binding.overlayOpacitySeek.progress = initial - 1
+        binding.overlayOpacityLabel.text = "Overlay " + initial + "%"
+
+        binding.overlayOpacitySeek.setOnSeekBarChangeListener(
+            object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    seekBar: SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean
+                ) {
+                    val percent = progress + 1
+                    binding.overlayOpacityLabel.text = "Overlay " + percent + "%"
+                    if (!fromUser) return
+
+                    OverlaySettings.setOpacityPercent(this@MainActivity, percent)
+                    WebViewOverlayHost.updateOpacity(this@MainActivity)
+                    if (Settings.canDrawOverlays(this@MainActivity)) {
+                        ContextCompat.startForegroundService(
+                            this@MainActivity,
+                            Intent(
+                                this@MainActivity,
+                                OverlayKeepAliveService::class.java
+                            ).setAction(OverlayKeepAliveService.ACTION_UPDATE_OPACITY)
+                        )
+                    }
+                    AppLog.add("OVERLAY", "opacity=" + percent + "%")
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            }
+        )
     }
 
     private fun ensureOverlayCapability() {
