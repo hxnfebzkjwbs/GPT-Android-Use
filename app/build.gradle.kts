@@ -11,8 +11,8 @@ android {
         applicationId = "com.hxnfebzkjwbs.gptandroiduse"
         minSdk = 30
         targetSdk = 35
-        versionCode = 49
-        versionName = "0.8.5"
+        versionCode = 50
+        versionName = "0.8.6"
     }
 
     buildFeatures { viewBinding = true }
@@ -32,4 +32,5 @@ dependencies {
     implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
     implementation("com.github.MuntashirAkon:sun-security-android:1.1")
     implementation("org.conscrypt:conscrypt-android:2.5.3")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }

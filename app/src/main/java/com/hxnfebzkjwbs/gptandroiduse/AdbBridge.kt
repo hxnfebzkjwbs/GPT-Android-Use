@@ -3,6 +3,8 @@ package com.hxnfebzkjwbs.gptandroiduse
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.util.Base64
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
@@ -14,6 +16,13 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 
@@ -251,34 +260,38 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         lastStage = "ui_observe"
         if (verifyTarget) requireTargetForeground()
 
-        val overlaySuspended = WebViewOverlayHost.suspendForUiInspection()
-        if (overlaySuspended) {
-            Thread.sleep(OVERLAY_UI_SETTLE_MS)
-        }
+        var xml = extractHierarchyXml(
+            runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
+        )
+        var attempts = 1
 
-        try {
-            var xml = extractHierarchyXml(
+        while (countXmlNodes(xml) == 0 && attempts < UI_DUMP_MAX_ATTEMPTS) {
+            Thread.sleep(UI_DUMP_RETRY_DELAY_MS)
+            xml = extractHierarchyXml(
                 runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
             )
-            var attempts = 1
-
-            while (countXmlNodes(xml) == 0 && attempts < UI_DUMP_MAX_ATTEMPTS) {
-                Thread.sleep(UI_DUMP_RETRY_DELAY_MS)
-                xml = extractHierarchyXml(
-                    runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
-                )
-                attempts += 1
-            }
-
-            val summary = summarizeUiXml(xml, attempts)
-            lastStage = "ui_observe_ok"
-            lastError = "none"
-            summary
-        } finally {
-            if (overlaySuspended) {
-                WebViewOverlayHost.resumeAfterUiInspection(context)
-            }
+            attempts += 1
         }
+
+        val rawNodes = countXmlNodes(xml)
+        val summary = summarizeUiXml(xml, attempts)
+        val needsVisualFallback =
+            rawNodes <= 1 || summary.contains("meaningful_nodes: 0")
+
+        val result = if (needsVisualFallback) {
+            val visual = runCatching { captureOcrSnapshot() }
+                .getOrElse {
+                    "VISUAL_SNAPSHOT_ERROR: " +
+                        (it.message ?: it.javaClass.simpleName)
+                }
+            summary + "\n\n" + visual
+        } else {
+            summary
+        }
+
+        lastStage = "ui_observe_ok"
+        lastError = "none"
+        result
     }.onFailure {
         recordFailure("ui_observe", it)
     }
@@ -435,15 +448,15 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         val age = System.currentTimeMillis() - lastUiObservedAt
         if (lastUiObservedAt <= 0L || age > TAP_SNAPSHOT_MAX_AGE_MS) {
             throw IllegalStateException(
-                "Tap rejected: no recent UI snapshot is available. " +
-                    "Run uiautomator dump first, then choose a visible clickable node."
+                "Tap rejected: no recent UI or visual snapshot is available. " +
+                    "Run uiautomator dump first, then choose a clickable UI node or OCR text region."
             )
         }
 
         val target = lastClickableTargets.firstOrNull { it.contains(x, y) }
             ?: throw IllegalStateException(
                 "Tap rejected: (" + x + "," + y + ") is not inside any " +
-                    "clickable=true node from the latest UI_SNAPSHOT. " +
+                    "validated clickable UI node or OCR text region from the latest snapshot. " +
                     "Do not guess coordinates; inspect the UI again."
             )
 
@@ -742,6 +755,120 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }.take(MAX_UI_RESULT_CHARS)
     }
 
+    private fun captureOcrSnapshot(): String {
+        lastStage = "ui_ocr_capture"
+
+        val rawBase64 = runShellUnchecked("screencap -p | base64")
+        val encoded = rawBase64
+            .lineSequence()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotBlank() &&
+                    line.matches(Regex("^[A-Za-z0-9+/=]+$"))
+            }
+            .joinToString("")
+
+        check(encoded.isNotBlank()) { "Screenshot base64 output was empty" }
+
+        val bytes = Base64.decode(encoded, Base64.DEFAULT)
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: error("Could not decode screenshot PNG")
+
+        val image = InputImage.fromBitmap(bitmap, 0)
+        val recognizer = TextRecognition.getClient(
+            ChineseTextRecognizerOptions.Builder().build()
+        )
+        val latch = CountDownLatch(1)
+        val resultRef = AtomicReference<Text?>(null)
+        val errorRef = AtomicReference<Exception?>(null)
+
+        try {
+            recognizer.process(image)
+                .addOnSuccessListener {
+                    resultRef.set(it)
+                    latch.countDown()
+                }
+                .addOnFailureListener {
+                    errorRef.set(it)
+                    latch.countDown()
+                }
+
+            check(latch.await(OCR_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                "OCR timed out"
+            }
+            errorRef.get()?.let { throw it }
+
+            val result = resultRef.get() ?: error("OCR returned no result")
+            val regions = ArrayList<String>()
+            val targets = ArrayList<UiTapTarget>()
+
+            result.textBlocks
+                .flatMap { it.lines }
+                .sortedWith(
+                    compareBy<Text.Line>(
+                        { it.boundingBox?.top ?: Int.MAX_VALUE },
+                        { it.boundingBox?.left ?: Int.MAX_VALUE }
+                    )
+                )
+                .take(MAX_OCR_REGIONS)
+                .forEach { line ->
+                    val text = line.text.trim()
+                    val box = line.boundingBox
+                    if (text.isBlank() || box == null || box.width() <= 0 || box.height() <= 0) {
+                        return@forEach
+                    }
+
+                    val safeText = text
+                        .replace("\n", " ")
+                        .replace("\r", " ")
+                        .take(MAX_UI_TEXT_CHARS)
+
+                    regions += buildString {
+                        append("region text=")
+                        append(quoteUi(safeText))
+                        append(" bounds=[")
+                        append(box.left).append(",").append(box.top)
+                        append("][")
+                        append(box.right).append(",").append(box.bottom)
+                        append("]")
+                    }
+
+                    targets += UiTapTarget(
+                        box.left,
+                        box.top,
+                        box.right,
+                        box.bottom,
+                        "ocr=" + safeText
+                    )
+                }
+
+            if (targets.isNotEmpty()) {
+                lastClickableTargets = targets
+                lastUiObservedAt = System.currentTimeMillis()
+            }
+
+            AppLog.add(
+                "OCR",
+                "regions=" + regions.size +
+                    " screenshot=" + bitmap.width + "x" + bitmap.height
+            )
+
+            return buildString {
+                appendLine("VISUAL_SNAPSHOT")
+                appendLine("source: screenshot_ocr")
+                appendLine("image_size: " + bitmap.width + "x" + bitmap.height)
+                appendLine("text_regions: " + regions.size)
+                regions.forEach { appendLine(it) }
+                if (regions.size >= MAX_OCR_REGIONS) {
+                    appendLine("truncated: true")
+                }
+            }.take(MAX_UI_RESULT_CHARS)
+        } finally {
+            recognizer.close()
+            bitmap.recycle()
+        }
+    }
+
     private fun parseBounds(value: String): IntArray? {
         val match = Regex(
             "^\\[(\\d+),(\\d+)]\\[(\\d+),(\\d+)]$"
@@ -777,8 +904,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val TARGET_LAUNCH_POLL_ATTEMPTS = 6
         private const val TARGET_LAUNCH_POLL_DELAY_MS = 200L
         private const val TAP_SNAPSHOT_MAX_AGE_MS = 60_000L
-        private const val OVERLAY_UI_SETTLE_MS = 120L
         private const val UI_DUMP_MAX_ATTEMPTS = 2
         private const val UI_DUMP_RETRY_DELAY_MS = 180L
+        private const val OCR_TIMEOUT_SECONDS = 8L
+        private const val MAX_OCR_REGIONS = 120
     }
 }
