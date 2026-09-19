@@ -43,11 +43,14 @@ class MainActivity : AppCompatActivity() {
     private var taskRunning = false
     private var adbCheckInFlight = false
     private var bridgeCheckInFlight = false
+    private var webPageLoading = false
+    private var webPageLoaded = false
+    private var bridgeReloadInFlight = false
     private val readinessHandler = Handler(Looper.getMainLooper())
     private val readinessRetryRunnable = Runnable {
         if (isFinishing || isDestroyed) return@Runnable
         if (!adbReady) checkAdbReadiness()
-        if (!bridgeReady) checkBridgeReadiness()
+        if (!bridgeReady) recoverBridgeByReload()
         scheduleReadinessRetry()
     }
 
@@ -75,11 +78,13 @@ class MainActivity : AppCompatActivity() {
                     bridgeReady = false
                     updateConnectionStatus()
                     checkAdbReadiness()
-                    checkBridgeReadiness()
+                    recoverBridgeByReload()
                     scheduleReadinessRetry()
                 }
                 SettingsActivity.ACTION_RELOAD_WEB -> {
                     bridgeReady = false
+                    webPageLoaded = false
+                    bridgeReloadInFlight = true
                     updateConnectionStatus()
                     binding.chatWebView.reload()
                     scheduleReadinessRetry()
@@ -333,19 +338,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun checkBridgeReadiness() {
+    private fun checkBridgeReadinessAfterPageLoad() {
         if (bridgeReady || bridgeCheckInFlight) return
-        bridgeCheckInFlight = true
+        if (webPageLoading || !webPageLoaded) return
 
+        bridgeCheckInFlight = true
         pageAdbBridge.checkBridgeReady { ok, _ ->
             runOnUiThread {
                 bridgeCheckInFlight = false
                 bridgeReady = ok
                 updateComposerEnabled()
                 updateConnectionStatus()
-                if (!ok) scheduleReadinessRetry()
+
+                if (!ok) {
+                    // A loaded page with an unhealthy Bridge is not healed by
+                    // injecting the same script again. The next retry reloads
+                    // the page and waits for a fresh onPageFinished().
+                    scheduleReadinessRetry()
+                }
             }
         }
+    }
+
+    private fun recoverBridgeByReload() {
+        if (bridgeReady) return
+        if (webPageLoading || bridgeReloadInFlight) return
+
+        val currentUrl = binding.chatWebView.url.orEmpty()
+        if (currentUrl.isBlank() || currentUrl == "about:blank") {
+            return
+        }
+
+        bridgeReloadInFlight = true
+        webPageLoaded = false
+        bridgeCheckInFlight = false
+        AppLog.add(
+            "BRIDGE_RECOVERY",
+            "Bridge not ready; reloading WebView and waiting for onPageFinished"
+        )
+        binding.chatWebView.reload()
     }
 
     private fun scheduleReadinessRetry() {
@@ -478,7 +509,7 @@ class MainActivity : AppCompatActivity() {
             pageAdbBridge.installForCurrentPage()
         }
         checkAdbReadiness()
-        checkBridgeReadiness()
+        if (!bridgeReady) recoverBridgeByReload()
         scheduleReadinessRetry()
         ensureOverlayCapability()
         startOverlayService()
@@ -558,15 +589,27 @@ class MainActivity : AppCompatActivity() {
                 url: String,
                 favicon: android.graphics.Bitmap?
             ) {
+                webPageLoading = true
+                webPageLoaded = false
+                bridgeReady = false
+                bridgeCheckInFlight = false
                 pageAdbBridge.onTopLevelUrlChanged(url)
+                updateComposerEnabled()
+                updateConnectionStatus()
                 super.onPageStarted(view, url, favicon)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
-                pageAdbBridge.onTopLevelUrlChanged(url)
-                pageAdbBridge.installForCurrentPage()
+                webPageLoading = false
+                webPageLoaded = true
+                bridgeReloadInFlight = false
                 bridgeReady = false
-                checkBridgeReadiness()
+                pageAdbBridge.onTopLevelUrlChanged(url)
+
+                // Injection is deliberately performed only after the page load
+                // has completed. Health is checked only after this injection.
+                pageAdbBridge.installForCurrentPage()
+                checkBridgeReadinessAfterPageLoad()
                 scheduleReadinessRetry()
                 super.onPageFinished(view, url)
             }
