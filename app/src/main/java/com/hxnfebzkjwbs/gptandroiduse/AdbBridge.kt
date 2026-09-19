@@ -86,20 +86,44 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                 return@runCatching
             }
 
-            val endpoint = ShizukuStyleAdbDiscovery.discoverEndpointBlocking(
-                context,
-                ShizukuStyleAdbDiscovery.TLS_CONNECT,
-                AUTO_CONNECT_TIMEOUT_MS
-            ).getOrThrow()
+            var lastFailure: Throwable? = null
+            repeat(AUTO_CONNECT_ATTEMPTS) { attempt ->
+                lastStage = "tls_discovery"
+                val endpoint = ShizukuStyleAdbDiscovery.discoverEndpointBlocking(
+                    context,
+                    ShizukuStyleAdbDiscovery.TLS_CONNECT,
+                    AUTO_CONNECT_TIMEOUT_MS
+                ).getOrThrow()
 
-            lastEndpoint = endpoint.host + ":" + endpoint.port
-            lastStage = "tls_connect"
-            check(manager.connect(endpoint.host, endpoint.port)) {
-                "Wireless ADB TLS connection failed at " + endpoint.host + ":" + endpoint.port
+                lastEndpoint = endpoint.host + ":" + endpoint.port
+                lastStage = "tls_connect"
+
+                val connected = runCatching {
+                    check(manager.connect(endpoint.host, endpoint.port)) {
+                        "Wireless ADB TLS connection failed at " +
+                            endpoint.host + ":" + endpoint.port
+                    }
+                }
+
+                if (connected.isSuccess) {
+                    lastConnectSuccessAt = System.currentTimeMillis()
+                    lastStage = "connected"
+                    lastError = "none"
+                    return@runCatching
+                }
+
+                lastFailure = connected.exceptionOrNull()
+                runCatching { manager.disconnect() }
+
+                if (attempt + 1 < AUTO_CONNECT_ATTEMPTS) {
+                    lastStage = "tls_rediscovery"
+                    Thread.sleep(AUTO_CONNECT_RETRY_DELAY_MS)
+                }
             }
-            lastConnectSuccessAt = System.currentTimeMillis()
-            lastStage = "connected"
-            lastError = "none"
+
+            throw lastFailure ?: IllegalStateException(
+                "Wireless ADB connection failed after endpoint rediscovery"
+            )
         }
         recordFailure(lastStage, result.exceptionOrNull())
         return result
@@ -573,7 +597,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     companion object {
         private const val ADB_WIFI_ENABLED_KEY = "adb_wifi_enabled"
         private const val PROBE_COMMAND = "settings get global development_settings_enabled"
-        private const val AUTO_CONNECT_TIMEOUT_MS = 5_000L
+        private const val AUTO_CONNECT_TIMEOUT_MS = 7_000L
+        private const val AUTO_CONNECT_ATTEMPTS = 2
+        private const val AUTO_CONNECT_RETRY_DELAY_MS = 350L
         private const val UI_DUMP_STDOUT = "/proc/self/fd/1"
         private const val MAX_UI_NODES = 120
         private const val MAX_UI_TEXT_CHARS = 160

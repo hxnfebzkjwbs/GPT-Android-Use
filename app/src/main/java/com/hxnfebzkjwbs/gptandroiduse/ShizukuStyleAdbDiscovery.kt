@@ -5,6 +5,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -67,6 +69,7 @@ class ShizukuStyleAdbDiscovery(
 
                             val endpoint = Endpoint(address.hostAddress.orEmpty(), port)
                             if (endpoint.host.isBlank()) return
+                            if (!isEndpointReachable(endpoint)) return
 
                             onEndpoint(endpoint)
                             onPort(port)
@@ -91,6 +94,18 @@ class ShizukuStyleAdbDiscovery(
         runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
     }
 
+    private fun isEndpointReachable(endpoint: Endpoint): Boolean {
+        return runCatching {
+            Socket().use { socket ->
+                socket.connect(
+                    InetSocketAddress(endpoint.host, endpoint.port),
+                    ENDPOINT_PROBE_TIMEOUT_MS
+                )
+                true
+            }
+        }.getOrDefault(false)
+    }
+
     private fun isAddressOnThisDevice(address: InetAddress): Boolean {
         return runCatching {
             val target = address.address
@@ -107,6 +122,7 @@ class ShizukuStyleAdbDiscovery(
         const val LOOPBACK = "127.0.0.1"
         const val TLS_PAIRING = "_adb-tls-pairing._tcp"
         const val TLS_CONNECT = "_adb-tls-connect._tcp"
+        private const val ENDPOINT_PROBE_TIMEOUT_MS = 700
 
         fun discoverEndpointBlocking(
             context: Context,
