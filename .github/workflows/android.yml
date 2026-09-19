@@ -58,7 +58,7 @@ jobs:
           test -n "$APKSIGNER"
           test -n "$ZIPALIGN"
           "$ZIPALIGN" -f -p 4             app/build/outputs/apk/release/app-release-unsigned.apk             "$RUNNER_TEMP/app-release-aligned.apk"
-          "$APKSIGNER" sign             --ks "$RUNNER_TEMP/release-key.p12"             --ks-key-alias "$ANDROID_KEY_ALIAS"             --ks-pass env:ANDROID_KEYSTORE_PASSWORD             --key-pass env:ANDROID_KEY_PASSWORD             --out GPT-Android-Use-0.14.13.apk             "$RUNNER_TEMP/app-release-aligned.apk"
+          "$APKSIGNER" sign             --ks "$RUNNER_TEMP/release-key.p12"             --ks-key-alias "$ANDROID_KEY_ALIAS"             --ks-pass env:ANDROID_KEYSTORE_PASSWORD             --key-pass env:ANDROID_KEY_PASSWORD             --out GPT-Android-Use-0.14.14.apk             "$RUNNER_TEMP/app-release-aligned.apk"
 
       - name: Verify private signing certificate
         if: github.event_name != 'pull_request'
@@ -67,7 +67,7 @@ jobs:
           set -euo pipefail
           EXPECTED="21d060a53a5d9f810665d4c2a8f20cd418b48b237dadcca33570409e78443925"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
-          CERTS="$("$APKSIGNER" verify --verbose --print-certs GPT-Android-Use-0.14.13.apk 2>&1)"
+          CERTS="$("$APKSIGNER" verify --verbose --print-certs GPT-Android-Use-0.14.14.apk 2>&1)"
           echo "$CERTS"
           echo "$CERTS" | grep -Fi "$EXPECTED"
 
@@ -76,5 +76,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: GPT-Android-Use-private-release
-          path: GPT-Android-Use-0.14.13.apk
+          path: GPT-Android-Use-0.14.14.apk
           if-no-files-found: error

@@ -33,8 +33,8 @@ object WebViewOverlayHost {
     private var backgroundHeight = 0
     private var floatingButton: FloatingStatusView? = null
     private var floatingStatus = ""
-    private var overlayX = 0
-    private var overlayY = 0
+    private var overlayX = -1
+    private var overlayY = -1
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun moveToBackground(context: Context, webView: WebView): Boolean =
@@ -109,7 +109,11 @@ object WebViewOverlayHost {
                 return@synchronized runCatching {
                     wm.addView(
                         root,
-                        createMicroWindowLayoutParams(hostSide)
+                        createMicroWindowLayoutParams(
+                            hostSide,
+                            screenWidth,
+                            screenHeight
+                        )
                     )
 
                     windowManager = wm
@@ -196,30 +200,17 @@ object WebViewOverlayHost {
         var downAt = 0L
         var latestRawX = 0f
         var latestRawY = 0f
-        var touchOffsetX = 0f
-        var touchOffsetY = 0f
+        var lastDragRawX = 0f
+        var lastDragRawY = 0f
 
         bubble.isHapticFeedbackEnabled = true
 
         fun unlockDrag(rawX: Float, rawY: Float) {
             if (!pointerDown || dragUnlocked) return
 
-            val params =
-                root.layoutParams as? WindowManager.LayoutParams
-                    ?: return
-
             dragUnlocked = true
-
-            // Capture the finger's position inside the stationary icon at the
-            // exact unlock moment. After this, every MOVE maps the window
-            // directly to the finger, so there is no threshold and no drift.
-            val left =
-                screenWidth - hostSide - params.x
-            val top =
-                screenHeight - hostSide - params.y
-            touchOffsetX = rawX - left
-            touchOffsetY = rawY - top
-
+            lastDragRawX = rawX
+            lastDragRawY = rawY
             bubble.alpha = 1f
 
             val hapticDone =
@@ -277,39 +268,37 @@ object WebViewOverlayHost {
                     }
 
                     if (dragUnlocked) {
-                        val desiredLeft =
-                            event.rawX - touchOffsetX
-                        val desiredTop =
-                            event.rawY - touchOffsetY
-
-                        val maxLeft =
-                            (screenWidth - hostSide)
-                                .coerceAtLeast(0)
-                        val maxTop =
-                            (screenHeight - hostSide)
-                                .coerceAtLeast(0)
-
-                        val clampedLeft =
-                            desiredLeft
+                        val dx =
+                            (event.rawX - lastDragRawX)
                                 .roundToInt()
-                                .coerceIn(0, maxLeft)
-                        val clampedTop =
-                            desiredTop
+                        val dy =
+                            (event.rawY - lastDragRawY)
                                 .roundToInt()
-                                .coerceIn(0, maxTop)
 
-                        // END|BOTTOM gravity stores distances from the right
-                        // and bottom edges.
-                        params.x =
-                            screenWidth - hostSide - clampedLeft
-                        params.y =
-                            screenHeight - hostSide - clampedTop
+                        if (dx != 0 || dy != 0) {
+                            val maxX =
+                                (screenWidth - hostSide)
+                                    .coerceAtLeast(0)
+                            val maxY =
+                                (screenHeight - hostSide)
+                                    .coerceAtLeast(0)
 
-                        overlayX = params.x
-                        overlayY = params.y
+                            params.x =
+                                (params.x + dx)
+                                    .coerceIn(0, maxX)
+                            params.y =
+                                (params.y + dy)
+                                    .coerceIn(0, maxY)
 
-                        runCatching {
-                            wm.updateViewLayout(root, params)
+                            overlayX = params.x
+                            overlayY = params.y
+
+                            runCatching {
+                                wm.updateViewLayout(root, params)
+                            }
+
+                            lastDragRawX = event.rawX
+                            lastDragRawY = event.rawY
                         }
                     }
                     true
@@ -330,8 +319,6 @@ object WebViewOverlayHost {
                     mainHandler.removeCallbacks(longPressRunnable)
                     bubble.alpha = 1f
 
-                    // Before 2 s: normal tap. After 2 s: release only fixes
-                    // the floating icon at its current position.
                     if (!wasDragging) {
                         openMainActivity(context)
                     }
@@ -589,7 +576,9 @@ object WebViewOverlayHost {
     }
 
     private fun createMicroWindowLayoutParams(
-        hostSide: Int
+        hostSide: Int,
+        screenWidth: Int,
+        screenHeight: Int
     ): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
             hostSide,
@@ -600,9 +589,25 @@ object WebViewOverlayHost {
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.END
-            x = overlayX
-            y = overlayY
+            gravity = Gravity.TOP or Gravity.START
+
+            if (overlayX < 0 || overlayY < 0) {
+                overlayX =
+                    (screenWidth - hostSide)
+                        .coerceAtLeast(0)
+                overlayY =
+                    (screenHeight - hostSide)
+                        .coerceAtLeast(0)
+            }
+
+            x = overlayX.coerceIn(
+                0,
+                (screenWidth - hostSide).coerceAtLeast(0)
+            )
+            y = overlayY.coerceIn(
+                0,
+                (screenHeight - hostSide).coerceAtLeast(0)
+            )
             alpha = 1f
         }
 

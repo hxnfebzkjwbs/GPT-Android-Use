@@ -140,10 +140,34 @@ class FirstRunSetupActivity : AppCompatActivity() {
     companion object {
         private const val PREFS = "first_run_setup"
         private const val KEY_COMPLETED = "completed"
+        private const val FRESH_INSTALL_TIME_TOLERANCE_MS = 3_000L
 
         fun isCompleted(context: Context): Boolean =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getBoolean(KEY_COMPLETED, false)
+
+        fun shouldLaunch(context: Context): Boolean {
+            if (isCompleted(context)) return false
+
+            val info = runCatching {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    0
+                )
+            }.getOrNull() ?: return true
+
+            val isUpdate =
+                info.lastUpdateTime >
+                    info.firstInstallTime +
+                        FRESH_INSTALL_TIME_TOLERANCE_MS
+
+            if (isUpdate) {
+                markCompleted(context)
+                return false
+            }
+
+            return true
+        }
 
         private fun markCompleted(context: Context) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

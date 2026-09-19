@@ -565,7 +565,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun maybeLaunchFirstRunGuide() {
-        if (FirstRunSetupActivity.isCompleted(this)) {
+        if (!FirstRunSetupActivity.shouldLaunch(this)) {
             ensureOverlayCapability()
             return
         }
@@ -683,7 +683,7 @@ class MainActivity : AppCompatActivity() {
         checkAdbReadiness()
         if (!bridgeReady) recoverBridgeWithoutReload()
         scheduleReadinessRetry()
-        if (FirstRunSetupActivity.isCompleted(this)) {
+        if (!FirstRunSetupActivity.shouldLaunch(this)) {
             if (!firstRunGuideLaunched) {
                 ensureOverlayCapability()
             }
