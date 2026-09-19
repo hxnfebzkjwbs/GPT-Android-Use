@@ -80,7 +80,25 @@ class MainActivity : AppCompatActivity() {
             },
             onNativeAssistantMessage = { text ->
                 addNativeMessage("assistant", text)
+                binding.nativeSendButton.isEnabled = true
                 binding.bridgeStatusText.text = "AI：已回复"
+            },
+            onNativeSendState = { state, detail ->
+                when (state) {
+                    "sent" -> {
+                        binding.nativeSendButton.isEnabled = true
+                        binding.bridgeStatusText.text = "AI：等待回复…"
+                    }
+                    "failed" -> {
+                        binding.nativeSendButton.isEnabled = true
+                        binding.bridgeStatusText.text =
+                            "发送失败：" + detail
+                        addNativeMessage(
+                            "system",
+                            "发送失败：" + detail
+                        )
+                    }
+                }
             }
         )
 
@@ -197,12 +215,17 @@ class MainActivity : AppCompatActivity() {
         pageAdbBridge.installForCurrentPage()
         pageAdbBridge.sendNativeMessage(text) { result ->
             runOnUiThread {
-                binding.nativeSendButton.isEnabled = true
                 when (result) {
+                    "queued" -> {
+                        binding.bridgeStatusText.text =
+                            "AI：正在提交到 Web 传输层…"
+                    }
                     "sent" -> {
+                        binding.nativeSendButton.isEnabled = true
                         binding.bridgeStatusText.text = "AI：等待回复…"
                     }
                     "not-ready", "composer-missing" -> {
+                        binding.nativeSendButton.isEnabled = true
                         binding.bridgeStatusText.text =
                             "Web 传输层尚未就绪，请稍后重试或打开 Web 调试"
                         addNativeMessage(
@@ -211,6 +234,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                     else -> {
+                        binding.nativeSendButton.isEnabled = true
                         binding.bridgeStatusText.text =
                             "发送失败：" + result
                         addNativeMessage(

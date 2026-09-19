@@ -22,7 +22,8 @@ class WebAdbBridge(
         reason: String,
         complete: (Boolean) -> Unit
     ) -> Unit,
-    private val onNativeAssistantMessage: (String) -> Unit = {}
+    private val onNativeAssistantMessage: (String) -> Unit = {},
+    private val onNativeSendState: (String, String) -> Unit = { _, _ -> }
 ) {
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
@@ -181,6 +182,24 @@ class WebAdbBridge(
     fun reportStatus(token: String, stage: String, detail: String) {
         if (!enabled || token != sessionToken || !trustedTopPage) return
         postStatus("Bridge page: " + stage.take(40) + " · " + detail.take(160))
+    }
+
+    @JavascriptInterface
+    fun nativeSendState(
+        token: String,
+        state: String,
+        detail: String
+    ) {
+        if (!enabled || token != sessionToken || !trustedTopPage) return
+        val safeState = state.take(40)
+        val safeDetail = detail.take(300)
+        AppLog.add(
+            "NATIVE_CHAT",
+            "send_state=" + safeState + " detail=" + safeDetail
+        )
+        webView.post {
+            onNativeSendState(safeState, safeDetail)
+        }
     }
 
     @JavascriptInterface
@@ -592,6 +611,9 @@ class WebAdbBridge(
           const PHASE_RESULT_PENDING = 'RESULT_PENDING';
           const TX_WAIT_TIMEOUT_MS = 45000;
           const INTERNAL_SEND_TIMEOUT_MS = 60000;
+          const NATIVE_SEND_INITIAL_DELAY_MS = 120;
+          const NATIVE_SEND_RETRY_MS = 150;
+          const NATIVE_SEND_MAX_ATTEMPTS = 20;
 
           let enabled = true;
           let bypassNextSend = false;
@@ -603,6 +625,7 @@ class WebAdbBridge(
           let transactionCounter = 0;
           let activeTransaction = null;
           let lastNativeAssistantKey = '';
+          let nativeSendPending = false;
 
           const internalQueue = [];
           const sentInternalIds = new Set();
@@ -1471,6 +1494,7 @@ class WebAdbBridge(
           window.__gptAndroidUseNativeSend = function(text) {
             if (!enabled) return 'disabled';
             if (isStreaming()) return 'streaming';
+            if (nativeSendPending) return 'busy';
 
             const message = String(text || '').trim();
             if (!message) return 'empty';
@@ -1490,11 +1514,82 @@ class WebAdbBridge(
             const editor = findComposer();
             if (!editor) return 'composer-missing';
 
-            const inserted =
-              setComposerText(editor, message + BRIDGE_HINT);
+            const composed = message + BRIDGE_HINT;
+            const inserted = setComposerText(editor, composed);
             if (!inserted) return 'write-failed';
 
-            return clickSend('native') ? 'sent' : 'send-failed';
+            nativeSendPending = true;
+            let attempt = 0;
+
+            function reportNativeSendState(state, detail) {
+              try {
+                window.GPTAndroidUseNative.nativeSendState(
+                  TOKEN,
+                  String(state || ''),
+                  String(detail || '')
+                );
+              } catch (_) {}
+            }
+
+            function failNativeSend(reason) {
+              nativeSendPending = false;
+              const currentEditor = findComposer();
+              if (currentEditor) {
+                const currentText = composerText(currentEditor);
+                if (
+                  currentText === composed ||
+                  currentText.includes(message)
+                ) {
+                  setComposerText(currentEditor, '');
+                }
+              }
+              nativeStatus('NATIVE_SEND_FAILED', reason);
+              reportNativeSendState('failed', reason);
+            }
+
+            function tryNativeSend() {
+              if (!enabled) {
+                failNativeSend('bridge disabled before send');
+                return;
+              }
+
+              if (isStreaming()) {
+                attempt += 1;
+              } else {
+                const button = findSendButton();
+                if (button && !button.disabled) {
+                  const sent = clickSend('native');
+                  if (sent) {
+                    nativeSendPending = false;
+                    nativeStatus(
+                      'NATIVE_SEND_CONFIRMED',
+                      'attempt=' + attempt
+                    );
+                    reportNativeSendState(
+                      'sent',
+                      'attempt=' + attempt
+                    );
+                    return;
+                  }
+                }
+                attempt += 1;
+              }
+
+              if (attempt >= NATIVE_SEND_MAX_ATTEMPTS) {
+                failNativeSend(
+                  'send button unavailable after ' + attempt + ' attempts'
+                );
+                return;
+              }
+
+              setTimeout(
+                tryNativeSend,
+                NATIVE_SEND_RETRY_MS
+              );
+            }
+
+            setTimeout(tryNativeSend, NATIVE_SEND_INITIAL_DELAY_MS);
+            return 'queued';
           };
 
           window.__gptAndroidUseOneTapAdbRun = function() {
