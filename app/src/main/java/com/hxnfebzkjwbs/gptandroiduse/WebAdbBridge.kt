@@ -970,19 +970,6 @@ class WebAdbBridge(
           }
 
           function attachProtocolToComposer() {
-            if (item.image && !item.imageAttached) {
-              const attached = attachBridgeImage(item.image);
-              if (!attached) {
-                nativeStatus('INTERNAL_WAIT_IMAGE_ATTACH', item.id);
-                scheduleInternalFlush(500);
-                return;
-              }
-              item.imageAttached = true;
-              nativeStatus('INTERNAL_IMAGE_ATTACHED', item.id);
-              scheduleInternalFlush(900);
-              return;
-            }
-
             const editor = findComposer();
             if (!editor) {
               nativeStatus('COMPOSER_MISSING', 'while attaching protocol');
@@ -1077,6 +1064,7 @@ class WebAdbBridge(
               transactionId: transactionId || '',
               image: image || null,
               imageAttached: !image,
+              imageAttachAttempts: 0,
               prepared: false,
               queuedAt: Date.now()
             });
@@ -1131,6 +1119,23 @@ class WebAdbBridge(
             const file = bridgeImageToFile(image);
             if (!file) return false;
 
+            const editor = findComposer();
+            if (editor) {
+              try {
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                editor.dispatchEvent(
+                  new ClipboardEvent('paste', {
+                    bubbles: true,
+                    cancelable: true,
+                    clipboardData: transfer
+                  })
+                );
+                nativeStatus('INTERNAL_IMAGE_ATTACH_METHOD', 'paste');
+                return true;
+              } catch (_) {}
+            }
+
             const inputs = Array.from(
               document.querySelectorAll('input[type="file"]')
             );
@@ -1152,11 +1157,11 @@ class WebAdbBridge(
                 input.dispatchEvent(
                   new Event('change', { bubbles: true })
                 );
+                nativeStatus('INTERNAL_IMAGE_ATTACH_METHOD', 'file-input');
                 return true;
               } catch (_) {}
             }
 
-            const editor = findComposer();
             if (!editor) return false;
 
             try {
@@ -1171,6 +1176,7 @@ class WebAdbBridge(
                   })
                 );
               });
+              nativeStatus('INTERNAL_IMAGE_ATTACH_METHOD', 'drag-drop');
               return true;
             } catch (_) {
               return false;
@@ -1204,6 +1210,36 @@ class WebAdbBridge(
                 item.id + ':visibleStop=' + stopButtons().filter(isVisible).length
               );
               scheduleInternalFlush(400);
+              return;
+            }
+
+            if (item.image && !item.imageAttached) {
+              const attached = attachBridgeImage(item.image);
+              item.imageAttachAttempts = (item.imageAttachAttempts || 0) + 1;
+
+              if (!attached) {
+                if (item.imageAttachAttempts >= MAX_IMAGE_ATTACH_ATTEMPTS) {
+                  nativeStatus('INTERNAL_IMAGE_ATTACH_FAILED', item.id);
+                  item.text =
+                    item.text +
+                    '\n\nSCREENSHOT_ATTACHMENT_FAILED: the device screenshot could not be attached to this message.';
+                  item.image = null;
+                  item.imageAttached = true;
+                  scheduleInternalFlush(100);
+                  return;
+                }
+
+                nativeStatus(
+                  'INTERNAL_WAIT_IMAGE_ATTACH',
+                  item.id + ':' + item.imageAttachAttempts
+                );
+                scheduleInternalFlush(500);
+                return;
+              }
+
+              item.imageAttached = true;
+              nativeStatus('INTERNAL_IMAGE_ATTACHED', item.id);
+              scheduleInternalFlush(900);
               return;
             }
 
@@ -1516,5 +1552,6 @@ class WebAdbBridge(
         private const val WIRELESS_ADB_RESTART_DELAY_MS = 1_500L
         private const val COMMAND_APPROVAL_TIMEOUT_SECONDS = 120L
         private const val IMAGE_JS_CHUNK_CHARS = 48_000
+        private const val MAX_IMAGE_ATTACH_ATTEMPTS = 4
     }
 }
