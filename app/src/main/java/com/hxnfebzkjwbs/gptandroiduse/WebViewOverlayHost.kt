@@ -180,16 +180,16 @@ object WebViewOverlayHost {
 
     private fun applyFloatingStatus(button: TextView) {
         val shortStatus = when (floatingStatus) {
-            "连接" -> "连接"
-            "进行" -> "进行"
-            "完成" -> "完成"
+            "连接" -> "连接中"
+            "进行" -> "进行中"
+            "完成" -> "已完成"
             "失败" -> "失败"
             else -> ""
         }
         button.text =
             if (shortStatus.isBlank()) "GPT"
             else "GPT\n" + shortStatus
-        button.textSize = if (shortStatus.isBlank()) 11f else 9f
+        button.textSize = if (shortStatus.isBlank()) 11f else 8.5f
         button.contentDescription =
             if (shortStatus.isBlank()) "GPT Android Use"
             else "GPT Android Use，任务状态：" + shortStatus

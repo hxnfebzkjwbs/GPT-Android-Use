@@ -580,12 +580,14 @@ class MainActivity : AppCompatActivity() {
         body.visibility = View.GONE
         header.visibility = View.VISIBLE
 
+        val completedStepCount = activeProcessStepCount
+
         fun refreshHeader() {
             header.text =
                 if (body.visibility == View.VISIBLE) {
-                    "过程（$activeProcessStepCount）⌄"
+                    "过程（$completedStepCount）⌄"
                 } else {
-                    "过程（$activeProcessStepCount）›"
+                    "过程（$completedStepCount）›"
                 }
         }
 
