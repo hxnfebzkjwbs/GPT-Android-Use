@@ -25,7 +25,8 @@ class WebAdbBridge(
     ) -> Unit,
     private val onNativeAssistantMessage: (String) -> Unit = {},
     private val onNativeSendState: (String, String) -> Unit = { _, _ -> },
-    private val onNativeStep: (String) -> Unit = {}
+    private val onNativeStep: (String) -> Unit = {},
+    private val onNativeTaskStatus: (String) -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
@@ -152,15 +153,56 @@ class WebAdbBridge(
     }
 
     fun checkAdbOnStartup() {
+        checkAdbReady { _, _ -> }
+    }
+
+    fun checkAdbReady(
+        onComplete: (Boolean, String) -> Unit
+    ) {
         executor.execute {
             postStatus("ADB: checking connection…")
             val result = ensureAdbReady()
             if (result.isSuccess) {
                 postStatus("ADB: connected")
+                webView.post { onComplete(true, "connected") }
             } else {
-                val message = result.exceptionOrNull()?.message ?: "unknown error"
+                val message =
+                    result.exceptionOrNull()?.message ?: "unknown error"
                 postStatus("ADB: reconnect failed · $message")
+                webView.post {
+                    onComplete(false, message.take(300))
+                }
             }
+        }
+    }
+
+    fun checkBridgeReady(
+        onComplete: (Boolean, String) -> Unit
+    ) {
+        if (!enabled) {
+            onComplete(false, "bridge disabled")
+            return
+        }
+        if (!trustedTopPage) {
+            onComplete(false, "ChatGPT page not ready")
+            return
+        }
+
+        webView.post {
+            installForCurrentPage()
+            webView.postDelayed({
+                webView.evaluateJavascript(
+                    "window.__gptAndroidUseBridgeHealth ? " +
+                        "window.__gptAndroidUseBridgeHealth() : 'not-ready';"
+                ) { raw ->
+                    val result = raw
+                        ?.trim()
+                        ?.removePrefix("\"")
+                        ?.removeSuffix("\"")
+                        ?: "unknown"
+                    onComplete(result == "ready", result)
+                }
+            }, BRIDGE_HEALTH_DELAY_MS)
         }
     }
 
@@ -206,6 +248,24 @@ class WebAdbBridge(
     fun reportStatus(token: String, stage: String, detail: String) {
         if (!enabled || token != sessionToken || !trustedTopPage) return
         postStatus("Bridge page: " + stage.take(40) + " · " + detail.take(160))
+    }
+
+    @JavascriptInterface
+    fun nativeTaskStatus(
+        token: String,
+        status: String
+    ) {
+        if (!enabled || token != sessionToken || !trustedTopPage) return
+        val safeStatus = status.trim().take(20)
+        if (
+            safeStatus != STATUS_IN_PROGRESS &&
+            safeStatus != STATUS_SUCCESS &&
+            safeStatus != STATUS_FAILURE
+        ) {
+            return
+        }
+        AppLog.add("TASK_STATUS", safeStatus)
+        webView.post { onNativeTaskStatus(safeStatus) }
     }
 
     @JavascriptInterface
@@ -271,13 +331,25 @@ class WebAdbBridge(
             var failurePhase = "parse"
             var activeCommand = ""
             try {
+                val taskStatus = parseTaskStatus(payload)
+                if (taskStatus == null) {
+                    postResult(
+                        requestId,
+                        false,
+                        "ADB_EXEC block rejected: missing required STATUS: 进行中 line.\n" +
+                            "Use exactly:\nADB_EXEC\nSTATUS: 进行中\nSTEP: 用一句中文说明这一步做什么以及依据\n<one adb shell command>"
+                    )
+                    return@execute
+                }
+                webView.post { onNativeTaskStatus(taskStatus) }
+
                 val stepDescription = parseStepDescription(payload)
                 if (stepDescription == null) {
                     postResult(
                         requestId,
                         false,
                         "ADB_EXEC block rejected: missing required STEP description.\n" +
-                            "Use exactly:\nADB_EXEC\nSTEP: 用一句中文说明这一步做什么以及依据\n<one adb shell command>"
+                            "Use exactly:\nADB_EXEC\nSTATUS: 进行中\nSTEP: 用一句中文说明这一步做什么以及依据\n<one adb shell command>"
                     )
                     return@execute
                 }
@@ -533,14 +605,29 @@ class WebAdbBridge(
         return parts.joinToString(" <- ")
     }
 
+    private fun parseTaskStatus(payload: String): String? {
+        if (payload.length > MAX_BLOCK_CHARS) return null
+        val lines = payload.replace("\r", "").lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        if (lines.size < 4 || lines.first() != EXEC_MARKER) return null
+        val statusLine = lines[1]
+        if (!statusLine.startsWith(STATUS_MARKER, ignoreCase = true)) {
+            return null
+        }
+        return statusLine.substringAfter(":").trim()
+            .takeIf { it == STATUS_IN_PROGRESS }
+    }
+
     private fun parseStepDescription(payload: String): String? {
         if (payload.length > MAX_BLOCK_CHARS) return null
         val lines = payload.replace("\r", "").lines()
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
-        if (lines.size < 3 || lines.first() != EXEC_MARKER) return null
-        val stepLine = lines[1]
+        if (lines.size < 4 || lines.first() != EXEC_MARKER) return null
+        val stepLine = lines[2]
         if (!stepLine.startsWith(STEP_MARKER, ignoreCase = true)) return null
         return stepLine.substringAfter(":").trim()
             .takeIf { it.length >= MIN_STEP_DESCRIPTION_CHARS }
@@ -552,10 +639,14 @@ class WebAdbBridge(
             .map { it.trim() }
             .filter { it.isNotBlank() && !it.startsWith("#") }
 
-        if (lines.size < 3 || lines.first() != EXEC_MARKER) return emptyList()
-        if (!lines[1].startsWith(STEP_MARKER, ignoreCase = true)) return emptyList()
-
-        return lines.drop(2)
+        if (lines.size < 4 || lines.first() != EXEC_MARKER) return emptyList()
+        if (!lines[1].startsWith(STATUS_MARKER, ignoreCase = true)) {
+            return emptyList()
+        }
+        if (!lines[2].startsWith(STEP_MARKER, ignoreCase = true)) {
+            return emptyList()
+        }
+        return lines.drop(3)
     }
 
     private fun postResult(requestId: String, ok: Boolean, output: String) {
@@ -636,14 +727,17 @@ class WebAdbBridge(
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
             '\n\n' + PROTOCOL_TAG + '\n' +
-            'If this request requires Android device access, output exactly one fenced code block using this mandatory three-line format: ' +
-            'ADB_EXEC, then STEP: followed by ONE short Chinese sentence explaining what this step does and what evidence justifies it, then exactly ONE adb shell command. ' +
-            'The native bridge rejects commands that do not contain the STEP line. ' +
+            'For every assistant turn in this device-control task, include a task status. ' +
+            'If another device action is required, output exactly one fenced code block using this mandatory four-line format: ' +
+            'ADB_EXEC, then STATUS: 进行中, then STEP: followed by ONE short Chinese sentence explaining what this step does and what evidence justifies it, then exactly ONE adb shell command. ' +
+            'When no further device action is required, begin the normal final answer with STATUS: 成功 or STATUS: 失败. ' +
+            'The native bridge rejects ADB_EXEC blocks that do not contain STATUS: 进行中 and STEP. ' +
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
             'Never tap guessed coordinates. First use UI_SNAPSHOT/OCR. If OCR cannot identify a visual-only target such as an icon or photo thumbnail, request exactly "screencap -p"; the next ADB_RESULT will include the real target-app screenshot as an image attachment. ' +
             'After receiving an attached screenshot, inspect the image itself and return coordinates in its stated image_size coordinate system. ' +
             'If the desired control is not visible, use a semantically relevant and validated navigation control from the latest snapshot to continue toward the goal; do not probe random locations. ' +
+            'Do not fail merely because a normal verification or confirmation screen appears. Continue through ordinary verified controls when the required information is already available in the current session or user request. If the screen requires a human-verification challenge or an unavailable external credential, finish with STATUS: 失败 and explain what the user must complete. ' +
             'An empty UIAutomator tree followed by OCR fallback is ONE observation attempt, not two failed attempts. ' +
             'Do not stop merely because the exact target control is not yet visible. Stop only after TWO distinct state-changing navigation actions, each followed by a fresh snapshot, fail to produce progress AND no new validated navigation candidate remains. ' +
             'For tasks that control another app, the FIRST device command must launch the target app with am start or monkey -p. ' +
@@ -696,6 +790,32 @@ class WebAdbBridge(
               if (el) return el;
             }
             return null;
+          }
+
+          function taskStatusFromText(text) {
+            const match = String(text || '').match(
+              /(?:^|\n)\s*STATUS:\s*(进行中|成功|失败)\s*(?:\n|$)/
+            );
+            return match ? match[1] : '';
+          }
+
+          function stripTaskStatus(text) {
+            return String(text || '')
+              .replace(
+                /(?:^|\n)\s*STATUS:\s*(进行中|成功|失败)\s*(?=\n|$)/,
+                ''
+              )
+              .trim();
+          }
+
+          function reportTaskStatus(status) {
+            if (!status) return;
+            try {
+              window.GPTAndroidUseNative.nativeTaskStatus(
+                TOKEN,
+                String(status)
+              );
+            } catch (_) {}
           }
 
           function hashText(text) {
@@ -1030,10 +1150,13 @@ class WebAdbBridge(
                    '').trim();
                 if (nativeText) {
                   try {
+                    const taskStatus = taskStatusFromText(nativeText);
+                    if (taskStatus) reportTaskStatus(taskStatus);
+                    const displayText = stripTaskStatus(nativeText);
                     window.GPTAndroidUseNative.nativeAssistantMessage(
                       TOKEN,
                       snapshot.key,
-                      nativeText
+                      displayText || nativeText
                     );
                     lastNativeAssistantKey = snapshot.key;
                   } catch (e) {
@@ -1495,7 +1618,8 @@ class WebAdbBridge(
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
               'The device command has finished. Inspect this result before deciding the next action. ' +
-              'If the original request still needs device work, the next code block MUST be: ADB_EXEC, then STEP: <one short Chinese sentence>, then exactly ONE command. ' +
+              'If the original request still needs device work, the next code block MUST be: ADB_EXEC, then STATUS: 进行中, then STEP: <one short Chinese sentence>, then exactly ONE command. ' +
+              'If no further device action is needed, begin the final answer with STATUS: 成功 or STATUS: 失败. ' +
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
               'Do not batch multiple commands. Use UI/OCR first. If the needed target is visual-only and OCR cannot locate it, request screencap -p so the next ADB_RESULT includes the real screenshot image. ' +
               'Do not count repeated screen inspections as failed navigation. If the exact target is absent but validated navigation candidates remain, continue toward the goal. ' +
@@ -1513,6 +1637,16 @@ class WebAdbBridge(
               txId,
               image
             );
+          };
+
+          window.__gptAndroidUseBridgeHealth = function() {
+            if (!enabled) return 'disabled';
+            const editor = findComposer();
+            if (!editor) return 'composer-missing';
+            if (!findSendButton() && !isStreaming()) {
+              return 'send-control-missing';
+            }
+            return 'ready';
           };
 
           window.__gptAndroidUseStopAutomation = function() {
@@ -1858,7 +1992,11 @@ class WebAdbBridge(
 
     companion object {
         private const val EXEC_MARKER = "ADB_EXEC"
+        private const val STATUS_MARKER = "STATUS:"
         private const val STEP_MARKER = "STEP:"
+        private const val STATUS_IN_PROGRESS = "进行中"
+        private const val STATUS_SUCCESS = "成功"
+        private const val STATUS_FAILURE = "失败"
         private const val MIN_STEP_DESCRIPTION_CHARS = 4
         private const val MAX_COMMANDS_PER_BLOCK = 1
         private const val MAX_BLOCK_CHARS = 6_000
@@ -1869,5 +2007,6 @@ class WebAdbBridge(
         private const val IMAGE_JS_CHUNK_CHARS = 48_000
         private const val MAX_IMAGE_ATTACH_ATTEMPTS = 4
         private const val MAX_NATIVE_MESSAGE_CHARS = 24_000
+        private const val BRIDGE_HEALTH_DELAY_MS = 250L
     }
 }
