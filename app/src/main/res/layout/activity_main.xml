@@ -69,20 +69,16 @@
                     android:layout_height="1dp"
                     android:layout_weight="1" />
 
-                <com.google.android.material.button.MaterialButton
+                <ImageButton
                     android:id="@+id/settingsButton"
-                    style="@style/Widget.MaterialComponents.Button.TextButton"
                     android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:minWidth="0dp"
-                    android:padding="10dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="设置"
-                    android:text=""
-                    app:icon="@drawable/ic_settings_24"
-                    app:iconGravity="textStart"
-                    app:iconPadding="0dp"
-                    app:iconTint="#5F6368"
-                    app:iconSize="24dp" />
+                    android:padding="10dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_settings_24"
+                    android:tint="#5F6368" />
 
             </LinearLayout>
 
@@ -159,20 +155,18 @@
                         android:textAllCaps="false"
                         android:visibility="gone" />
 
-                    <com.google.android.material.button.MaterialButton
+                    <ImageButton
                         android:id="@+id/nativeSendButton"
                         android:layout_width="48dp"
                         android:layout_height="48dp"
                         android:layout_marginStart="4dp"
-                        android:enabled="false"
-                        android:minWidth="0dp"
-                        android:padding="12dp"
+                        android:background="@drawable/bg_send_button"
                         android:contentDescription="发送"
-                        android:text=""
-                        app:icon="@drawable/ic_send_24"
-                        app:iconGravity="textStart"
-                        app:iconPadding="0dp"
-                        app:iconSize="24dp" />
+                        android:enabled="false"
+                        android:padding="12dp"
+                        android:scaleType="centerInside"
+                        android:src="@drawable/ic_send_24"
+                        android:tint="#FFFFFF" />
 
                 </LinearLayout>
 
