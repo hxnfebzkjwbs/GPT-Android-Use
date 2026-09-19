@@ -36,6 +36,10 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var overlayPromptShown = false
     private var webDebugMode = false
+    private var adbReady = false
+    private var bridgeReady = false
+    private var taskRunning = false
+    private var readinessGeneration = 0
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -80,26 +84,40 @@ class MainActivity : AppCompatActivity() {
             },
             onNativeAssistantMessage = { text ->
                 addNativeMessage("assistant", text)
-                binding.nativeSendButton.isEnabled = true
-                binding.nativeStopButton.isEnabled = false
                 binding.bridgeStatusText.text = "AI：已回复"
             },
             onNativeStep = { step ->
+                taskRunning = true
+                updateComposerEnabled()
                 binding.nativeStopButton.isEnabled = true
                 addNativeMessage(
                     "step",
                     "步骤：" + step
                 )
             },
+            onNativeTaskStatus = { status ->
+                runOnUiThread {
+                    binding.taskStatusText.text = "任务 · " + status
+                    taskRunning = status == "进行中"
+                    if (!taskRunning) {
+                        binding.nativeStopButton.isEnabled = false
+                    }
+                    updateComposerEnabled()
+                }
+            },
             onNativeSendState = { state, detail ->
                 when (state) {
                     "sent" -> {
-                        binding.nativeSendButton.isEnabled = true
+                        taskRunning = true
+                        updateComposerEnabled()
+                        binding.nativeStopButton.isEnabled = true
                         binding.bridgeStatusText.text = "AI：等待回复…"
                     }
                     "failed" -> {
-                        binding.nativeSendButton.isEnabled = true
+                        taskRunning = false
+                        updateComposerEnabled()
                         binding.nativeStopButton.isEnabled = false
+                        binding.taskStatusText.text = "任务 · 失败"
                         binding.bridgeStatusText.text =
                             "发送失败：" + detail
                         addNativeMessage(
@@ -115,46 +133,9 @@ class MainActivity : AppCompatActivity() {
         configureNativeChat()
         applyChatMode()
         pageAdbBridge.setEnabled(true)
-        binding.bridgeStatusText.text = "Bridge: ON"
+        setInitialReadiness()
+        checkAdbReadiness()
         ensureOverlayCapability()
-
-        if (savedInstanceState == null) {
-            pageAdbBridge.checkAdbOnStartup()
-        }
-
-        binding.adbRunButton.setOnClickListener {
-            binding.bridgeStatusText.text = "ADB Run: sending request…"
-            pageAdbBridge.installForCurrentPage()
-            binding.chatWebView.postDelayed({
-                pageAdbBridge.sendOneTapAdbRequest()
-            }, 250)
-        }
-
-        binding.bridgeTestButton.setOnClickListener {
-            binding.bridgeStatusText.text = "Bridge test: starting…"
-            pageAdbBridge.installForCurrentPage()
-            binding.chatWebView.postDelayed({
-                pageAdbBridge.runSelfTest()
-            }, 350)
-        }
-
-        binding.adbSetupButton.setOnClickListener {
-            startActivity(Intent(this, AdbSetupActivity::class.java))
-        }
-
-        binding.accessibilityButton.setOnClickListener {
-            startActivity(
-                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            )
-        }
-
-        binding.logsButton.setOnClickListener {
-            startActivity(Intent(this, LogActivity::class.java))
-        }
-
-        binding.reloadButton.setOnClickListener {
-            binding.chatWebView.reload()
-        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -175,9 +156,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun configureNativeChat() {
-        binding.chatModeButton.setOnClickListener {
-            webDebugMode = !webDebugMode
-            applyChatMode()
+        binding.settingsButton.setOnClickListener {
+            showSettingsDialog()
         }
 
         binding.nativeSendButton.setOnClickListener {
@@ -186,7 +166,9 @@ class MainActivity : AppCompatActivity() {
 
         binding.nativeStopButton.setOnClickListener {
             binding.nativeStopButton.isEnabled = false
-            binding.nativeSendButton.isEnabled = true
+            taskRunning = false
+            binding.taskStatusText.text = "任务 · 失败"
+            updateComposerEnabled()
             binding.bridgeStatusText.text = "正在停止…"
             pageAdbBridge.stopAutomation { result ->
                 runOnUiThread {
@@ -227,13 +209,17 @@ class MainActivity : AppCompatActivity() {
     private fun applyChatMode() {
         binding.nativeChatRoot.visibility =
             if (webDebugMode) View.GONE else View.VISIBLE
-        binding.chatModeButton.text =
-            if (webDebugMode) "返回原生聊天" else "Web 调试"
         binding.bridgeStatusText.text =
             if (webDebugMode) "模式：Web 调试" else "模式：原生聊天"
     }
 
     private fun sendNativeChatMessage() {
+        if (!adbReady || !bridgeReady || taskRunning) {
+            binding.bridgeStatusText.text =
+                "ADB / Bridge 未就绪或已有任务进行中"
+            return
+        }
+
         val text = binding.nativeMessageInput.text
             ?.toString()
             ?.trim()
@@ -241,7 +227,9 @@ class MainActivity : AppCompatActivity() {
         if (text.isBlank()) return
 
         binding.nativeMessageInput.setText("")
-        binding.nativeSendButton.isEnabled = false
+        taskRunning = true
+        binding.taskStatusText.text = "任务 · 进行中"
+        updateComposerEnabled()
         binding.nativeStopButton.isEnabled = true
         addNativeMessage("user", text)
         binding.bridgeStatusText.text = "AI：发送中…"
@@ -259,8 +247,10 @@ class MainActivity : AppCompatActivity() {
                         binding.bridgeStatusText.text = "AI：等待回复…"
                     }
                     "not-ready", "composer-missing" -> {
-                        binding.nativeSendButton.isEnabled = true
+                        taskRunning = false
+                        updateComposerEnabled()
                         binding.nativeStopButton.isEnabled = false
+                        binding.taskStatusText.text = "任务 · 失败"
                         binding.bridgeStatusText.text =
                             "Web 传输层尚未就绪，请稍后重试或打开 Web 调试"
                         addNativeMessage(
@@ -269,8 +259,10 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                     else -> {
-                        binding.nativeSendButton.isEnabled = true
+                        taskRunning = false
+                        updateComposerEnabled()
                         binding.nativeStopButton.isEnabled = false
+                        binding.taskStatusText.text = "任务 · 失败"
                         binding.bridgeStatusText.text =
                             "发送失败：" + result
                         addNativeMessage(
@@ -283,6 +275,151 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setInitialReadiness() {
+        adbReady = false
+        bridgeReady = false
+        taskRunning = false
+        binding.adbReadyText.text = "ADB · 检查中"
+        binding.bridgeReadyText.text = "Bridge · 检查中"
+        binding.taskStatusText.text = "任务 · 空闲"
+        binding.bridgeStatusText.text = "启动检查中…"
+        updateComposerEnabled()
+    }
+
+    private fun updateComposerEnabled() {
+        val ready = adbReady && bridgeReady && !taskRunning
+        binding.nativeMessageInput.isEnabled = ready
+        binding.nativeSendButton.isEnabled = ready
+        binding.nativeMessageInput.hint =
+            if (ready) "输入消息"
+            else if (!adbReady || !bridgeReady) "等待 ADB / Bridge 就绪…"
+            else "当前任务进行中…"
+    }
+
+    private fun checkAdbReadiness() {
+        val generation = ++readinessGeneration
+        adbReady = false
+        binding.adbReadyText.text = "ADB · 检查中"
+        updateComposerEnabled()
+
+        pageAdbBridge.checkAdbReady { ok, detail ->
+            runOnUiThread {
+                if (generation != readinessGeneration) return@runOnUiThread
+                adbReady = ok
+                binding.adbReadyText.text =
+                    if (ok) "ADB · Ready" else "ADB · 未就绪"
+                if (!ok) {
+                    binding.bridgeStatusText.text =
+                        "ADB 未就绪：" + detail
+                } else if (bridgeReady) {
+                    binding.bridgeStatusText.text =
+                        "已就绪，可以发送消息"
+                }
+                updateComposerEnabled()
+            }
+        }
+    }
+
+    private fun checkBridgeReadiness() {
+        val generation = readinessGeneration
+        bridgeReady = false
+        binding.bridgeReadyText.text = "Bridge · 检查中"
+        updateComposerEnabled()
+
+        pageAdbBridge.checkBridgeReady { ok, detail ->
+            runOnUiThread {
+                if (generation != readinessGeneration) return@runOnUiThread
+                bridgeReady = ok
+                binding.bridgeReadyText.text =
+                    if (ok) "Bridge · Ready" else "Bridge · 未就绪"
+                binding.bridgeStatusText.text =
+                    if (ok && adbReady) {
+                        "已就绪，可以发送消息"
+                    } else if (!ok) {
+                        "Bridge 未就绪：" + detail
+                    } else {
+                        "等待 ADB…"
+                    }
+                updateComposerEnabled()
+            }
+        }
+    }
+
+    private fun recheckReadiness() {
+        readinessGeneration += 1
+        adbReady = false
+        bridgeReady = false
+        binding.adbReadyText.text = "ADB · 检查中"
+        binding.bridgeReadyText.text = "Bridge · 检查中"
+        binding.bridgeStatusText.text = "重新检查中…"
+        updateComposerEnabled()
+        checkAdbReadiness()
+        binding.chatWebView.postDelayed({
+            checkBridgeReadiness()
+        }, 350)
+    }
+
+    private fun showSettingsDialog() {
+        val version =
+            runCatching {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }.getOrNull().orEmpty()
+
+        val items = arrayOf(
+            if (webDebugMode) "返回原生聊天" else "Web 调试",
+            "重新检查 ADB / Bridge",
+            "ADB 设置",
+            if (TextInputAccessibilityService.isConnected()) {
+                "无障碍输入（已启用）"
+            } else {
+                "无障碍输入"
+            },
+            "日志",
+            "重新加载 Web",
+            "ADB 测试",
+            "Bridge 测试",
+            "版本 " + version
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("设置")
+            .setItems(items) { dialog, which ->
+                when (which) {
+                    0 -> {
+                        webDebugMode = !webDebugMode
+                        applyChatMode()
+                    }
+                    1 -> recheckReadiness()
+                    2 -> startActivity(
+                        Intent(this, AdbSetupActivity::class.java)
+                    )
+                    3 -> startActivity(
+                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    )
+                    4 -> startActivity(
+                        Intent(this, LogActivity::class.java)
+                    )
+                    5 -> {
+                        bridgeReady = false
+                        updateComposerEnabled()
+                        binding.chatWebView.reload()
+                    }
+                    6 -> {
+                        binding.bridgeStatusText.text = "ADB 测试中…"
+                        pageAdbBridge.sendOneTapAdbRequest()
+                    }
+                    7 -> {
+                        binding.bridgeStatusText.text = "Bridge 测试中…"
+                        pageAdbBridge.runSelfTest()
+                    }
+                    8 -> Unit
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
     private fun addNativeMessage(role: String, text: String) {
         if (!::binding.isInitialized || text.isBlank()) return
 
@@ -290,8 +427,11 @@ class MainActivity : AppCompatActivity() {
             val density = resources.displayMetrics.density
             val bubble = TextView(this).apply {
                 this.text = text
+                maxWidth =
+                    (resources.displayMetrics.widthPixels * 0.82f).toInt()
+                setTextIsSelectable(true)
                 textSize =
-                    if (role == "system" || role == "step") 12f else 15f
+                    if (role == "system" || role == "step") 12.5f else 15.5f
                 setTextColor(
                     if (role == "user") Color.WHITE
                     else Color.rgb(30, 30, 30)
@@ -306,10 +446,10 @@ class MainActivity : AppCompatActivity() {
                     cornerRadius = 16 * density
                     setColor(
                         when (role) {
-                            "user" -> Color.rgb(55, 95, 210)
-                            "system" -> Color.rgb(235, 235, 235)
-                            "step" -> Color.rgb(230, 240, 255)
-                            else -> Color.rgb(245, 245, 245)
+                            "user" -> Color.rgb(54, 92, 205)
+                            "system" -> Color.rgb(232, 235, 240)
+                            "step" -> Color.rgb(226, 237, 255)
+                            else -> Color.WHITE
                         }
                     )
                 }
@@ -385,12 +525,6 @@ class MainActivity : AppCompatActivity() {
             binding.chatWebView.resumeTimers()
             pageAdbBridge.installForCurrentPage()
         }
-        binding.accessibilityButton.text =
-            if (TextInputAccessibilityService.isConnected()) {
-                "无障碍✓"
-            } else {
-                "无障碍"
-            }
         ensureOverlayCapability()
         startOverlayService()
     }
@@ -477,7 +611,8 @@ class MainActivity : AppCompatActivity() {
                 pageAdbBridge.installForCurrentPage()
                 binding.bridgeStatusText.text =
                     if (webDebugMode) "Web 调试已就绪"
-                    else "原生聊天已就绪"
+                    else "正在检查 Bridge…"
+                checkBridgeReadiness()
                 super.onPageFinished(view, url)
             }
         }
