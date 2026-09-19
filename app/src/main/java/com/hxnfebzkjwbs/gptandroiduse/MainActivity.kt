@@ -50,11 +50,19 @@ class MainActivity : AppCompatActivity() {
     private var bridgeHydrationStartedAt = 0L
     private var lastBridgeHealthDetail = ""
     private var lastBridgeHealthLogAt = 0L
-    private var activeProcessHeader: TextView? = null
-    private var activeProcessBody: LinearLayout? = null
-    private var activeProcessStepCount = 0
+    private var taskElapsedText: TextView? = null
+    private var taskStartedAt = 0L
+    private var taskTimerRunning = false
+    private var firstRunGuideLaunched = false
     private var lastTaskStatus: String? = null
     private val readinessHandler = Handler(Looper.getMainLooper())
+    private val taskElapsedRunnable = object : Runnable {
+        override fun run() {
+            if (!taskTimerRunning || taskStartedAt <= 0L) return
+            updateTaskElapsedText()
+            readinessHandler.postDelayed(this, TASK_ELAPSED_TICK_MS)
+        }
+    }
     private val bridgeHealthPollRunnable = Runnable {
         if (isFinishing || isDestroyed) return@Runnable
         checkBridgeReadinessAfterPageLoad()
@@ -138,19 +146,21 @@ class MainActivity : AppCompatActivity() {
             },
             onNativeAssistantMessage = { text ->
                 runOnUiThread {
-                    collapseNativeProcess()
+                    stopTaskElapsedTimer()
                     addNativeMessage("assistant", text)
                 }
             },
-            onNativeStep = { step ->
+            onNativeStep = {
                 taskRunning = true
                 updateComposerEnabled()
                 updateConnectionStatus()
-                addNativeStep(step)
             },
             onNativeTaskStatus = { status ->
                 runOnUiThread {
                     taskRunning = status == "进行中"
+                    if (status == "成功" || status == "失败") {
+                        stopTaskElapsedTimer()
+                    }
                     updateComposerEnabled()
                     updateConnectionStatus(status)
                 }
@@ -164,6 +174,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     "failed" -> {
                         taskRunning = false
+                        stopTaskElapsedTimer()
                         updateComposerEnabled()
                         updateConnectionStatus("失败")
                         addNativeMessage(
@@ -181,7 +192,7 @@ class MainActivity : AppCompatActivity() {
         pageAdbBridge.setEnabled(true)
         setInitialReadiness()
         checkAdbReadiness()
-        ensureOverlayCapability()
+        maybeLaunchFirstRunGuide()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -212,6 +223,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.nativeStopButton.setOnClickListener {
             taskRunning = false
+            stopTaskElapsedTimer()
             updateComposerEnabled()
             updateConnectionStatus("失败")
             pageAdbBridge.stopAutomation { result ->
@@ -267,7 +279,7 @@ class MainActivity : AppCompatActivity() {
         updateComposerEnabled()
         updateConnectionStatus("进行中")
         addNativeMessage("user", text)
-        beginNativeProcess()
+        startTaskElapsedTimer()
 
         pageAdbBridge.installForCurrentPage()
         pageAdbBridge.sendNativeMessage(text) { result ->
@@ -277,6 +289,7 @@ class MainActivity : AppCompatActivity() {
                     "sent" -> Unit
                     "not-ready", "composer-missing" -> {
                         taskRunning = false
+                        stopTaskElapsedTimer()
                         bridgeReady = false
                         updateComposerEnabled()
                         updateConnectionStatus("失败")
@@ -288,6 +301,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     else -> {
                         taskRunning = false
+                        stopTaskElapsedTimer()
                         updateComposerEnabled()
                         updateConnectionStatus("失败")
                         addNativeMessage(
@@ -331,10 +345,6 @@ class MainActivity : AppCompatActivity() {
         val connecting = !adbReady || !bridgeReady
         binding.connectionStatus.visibility =
             if (connecting) View.VISIBLE else View.GONE
-
-        if (taskStatus == "成功" || taskStatus == "失败") {
-            collapseNativeProcess()
-        }
 
         val overlayStatus = when {
             connecting -> "连接"
@@ -474,129 +484,94 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun beginNativeProcess() {
-        activeProcessHeader = null
-        activeProcessBody = null
-        activeProcessStepCount = 0
-    }
-
-    private fun ensureNativeProcessBody(): LinearLayout {
-        activeProcessBody?.let { return it }
+    private fun startTaskElapsedTimer() {
+        stopTaskElapsedTimer(removeView = false)
+        taskStartedAt = SystemClock.elapsedRealtime()
+        taskTimerRunning = true
 
         val density = resources.displayMetrics.density
-        val group = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(
-                (6 * density).toInt(),
-                (2 * density).toInt(),
-                (6 * density).toInt(),
-                (2 * density).toInt()
-            )
-        }
-
-        val header = TextView(this).apply {
-            textSize = 12f
+        val label = TextView(this).apply {
+            textSize = 12.5f
             setTextColor(Color.rgb(105, 110, 120))
             setPadding(
-                (4 * density).toInt(),
-                (5 * density).toInt(),
-                (4 * density).toInt(),
+                (6 * density).toInt(),
+                (3 * density).toInt(),
+                (6 * density).toInt(),
                 (5 * density).toInt()
             )
-            visibility = View.GONE
         }
 
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        group.addView(
-            header,
+        binding.nativeMessageList.addView(
+            label,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        group.addView(
-            body,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        binding.nativeMessageList.addView(
-            group,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                val margin = (6 * density).toInt()
-                setMargins(margin, margin, (36 * density).toInt(), margin)
+                gravity = Gravity.START
+                setMargins(
+                    (6 * density).toInt(),
+                    0,
+                    (36 * density).toInt(),
+                    (2 * density).toInt()
+                )
             }
         )
 
-        activeProcessHeader = header
-        activeProcessBody = body
-        return body
+        taskElapsedText = label
+        updateTaskElapsedText()
+        readinessHandler.removeCallbacks(taskElapsedRunnable)
+        readinessHandler.postDelayed(
+            taskElapsedRunnable,
+            TASK_ELAPSED_TICK_MS
+        )
     }
 
-    private fun addNativeStep(step: String) {
-        if (step.isBlank()) return
-        runOnUiThread {
-            val density = resources.displayMetrics.density
-            val body = ensureNativeProcessBody()
-            val line = TextView(this).apply {
-                text = step
-                textSize = 12.5f
-                setTextColor(Color.rgb(105, 110, 120))
-                setTextIsSelectable(true)
-                setPadding(
-                    (4 * density).toInt(),
-                    (3 * density).toInt(),
-                    (4 * density).toInt(),
-                    (3 * density).toInt()
-                )
+    private fun updateTaskElapsedText() {
+        val label = taskElapsedText ?: return
+        if (taskStartedAt <= 0L) return
+        val elapsedMs =
+            (SystemClock.elapsedRealtime() - taskStartedAt)
+                .coerceAtLeast(0L)
+        label.text = formatTaskElapsed(elapsedMs)
+    }
+
+    private fun stopTaskElapsedTimer(removeView: Boolean = false) {
+        if (taskStartedAt > 0L) {
+            updateTaskElapsedText()
+        }
+        taskTimerRunning = false
+        readinessHandler.removeCallbacks(taskElapsedRunnable)
+
+        if (removeView) {
+            taskElapsedText?.let { view ->
+                (view.parent as? ViewGroup)?.removeView(view)
             }
-            body.addView(
-                line,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
-            activeProcessStepCount += 1
-            binding.nativeMessageScroll.post {
-                binding.nativeMessageScroll.fullScroll(View.FOCUS_DOWN)
-            }
+        }
+
+        taskElapsedText = null
+        taskStartedAt = 0L
+    }
+
+    private fun formatTaskElapsed(elapsedMs: Long): String {
+        return if (elapsedMs < 60_000L) {
+            val seconds = elapsedMs / 1000.0
+            "任务耗时 %.1f 秒".format(seconds)
+        } else {
+            val totalSeconds = elapsedMs / 1000L
+            val minutes = totalSeconds / 60L
+            val seconds = totalSeconds % 60L
+            "任务耗时 " + minutes + "分 " + seconds + "秒"
         }
     }
 
-    private fun collapseNativeProcess() {
-        val header = activeProcessHeader ?: return
-        val body = activeProcessBody ?: return
-        if (activeProcessStepCount <= 0) return
-
-        body.visibility = View.GONE
-        header.visibility = View.VISIBLE
-
-        val completedStepCount = activeProcessStepCount
-
-        fun refreshHeader() {
-            header.text =
-                if (body.visibility == View.VISIBLE) {
-                    "过程（$completedStepCount）⌄"
-                } else {
-                    "过程（$completedStepCount）›"
-                }
+    private fun maybeLaunchFirstRunGuide() {
+        if (FirstRunSetupActivity.isCompleted(this)) {
+            ensureOverlayCapability()
+            return
         }
-
-        refreshHeader()
-        header.setOnClickListener {
-            body.visibility =
-                if (body.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            refreshHeader()
-        }
+        if (firstRunGuideLaunched) return
+        firstRunGuideLaunched = true
+        startActivity(Intent(this, FirstRunSetupActivity::class.java))
     }
 
     private fun addNativeMessage(role: String, text: String) {
@@ -708,8 +683,12 @@ class MainActivity : AppCompatActivity() {
         checkAdbReadiness()
         if (!bridgeReady) recoverBridgeWithoutReload()
         scheduleReadinessRetry()
-        ensureOverlayCapability()
-        startOverlayService()
+        if (FirstRunSetupActivity.isCompleted(this)) {
+            ensureOverlayCapability()
+            startOverlayService()
+        } else {
+            maybeLaunchFirstRunGuide()
+        }
     }
 
     override fun onStop() {
@@ -890,6 +869,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        taskTimerRunning = false
         readinessHandler.removeCallbacksAndMessages(null)
         if (isFinishing) {
             WebViewOverlayHost.release(binding.chatWebView)
@@ -908,5 +888,6 @@ class MainActivity : AppCompatActivity() {
         private const val BRIDGE_INITIAL_HEALTH_DELAY_MS = 750L
         private const val BRIDGE_HEALTH_POLL_MS = 1_000L
         private const val BRIDGE_WAIT_LOG_INTERVAL_MS = 5_000L
+        private const val TASK_ELAPSED_TICK_MS = 100L
     }
 }

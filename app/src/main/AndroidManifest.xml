@@ -16,6 +16,10 @@
         android:usesCleartextTraffic="false">
 
         <activity
+            android:name=".FirstRunSetupActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".AdbSetupActivity"
             android:exported="false" />
 
