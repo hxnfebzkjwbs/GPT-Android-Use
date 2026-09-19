@@ -25,7 +25,8 @@ object WebViewOverlayHost {
     private val lock = Any()
     private var windowManager: WindowManager? = null
     private var hostedWebView: WebView? = null
-    private var overlayRoot: FrameLayout? = null
+    private var webWindowRoot: FrameLayout? = null
+    private var iconWindowRoot: FrameLayout? = null
     private var overlayAttached = false
     private var captureHidden = false
     private var backgroundWidth = 0
@@ -64,6 +65,10 @@ object WebViewOverlayHost {
                         screenWidth,
                         screenHeight
                     )
+                    updateBackgroundWindowPosition(
+                        screenWidth,
+                        screenHeight
+                    )
                     floatingButton?.let { applyFloatingStatus(it) }
                     webView.resumeTimers()
                     webView.onResume()
@@ -72,7 +77,15 @@ object WebViewOverlayHost {
 
                 (webView.parent as? ViewGroup)?.removeView(webView)
 
-                val root = FrameLayout(appContext).apply {
+                val webRoot = FrameLayout(appContext).apply {
+                    clipChildren = true
+                    clipToPadding = true
+                    importantForAccessibility =
+                        FrameLayout.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                    alpha = 1f
+                }
+
+                val iconRoot = FrameLayout(appContext).apply {
                     clipChildren = true
                     clipToPadding = true
                     importantForAccessibility =
@@ -83,12 +96,11 @@ object WebViewOverlayHost {
                 webView.importantForAccessibility =
                     WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 webView.visibility = WebView.VISIBLE
-                webView.layoutParams =
-                    backgroundWebViewLayoutParams(
-                        screenWidth,
-                        screenHeight
-                    )
-                root.addView(webView)
+                webView.layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                webRoot.addView(webView)
 
                 val bubble = FloatingStatusView(appContext).apply {
                     isClickable = true
@@ -97,7 +109,7 @@ object WebViewOverlayHost {
                     setTaskStatus(floatingStatus)
                 }
 
-                root.addView(
+                iconRoot.addView(
                     bubble,
                     FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -106,20 +118,33 @@ object WebViewOverlayHost {
                 )
 
                 return@synchronized runCatching {
+                    // Keep the full-size ChatGPT WebView in its own overlay
+                    // window completely outside the physical display.
                     wm.addView(
-                        root,
-                        createMicroWindowLayoutParams(hostSide)
+                        webRoot,
+                        createBackgroundWindowLayoutParams(
+                            screenWidth,
+                            screenHeight
+                        )
+                    )
+
+                    // The user-visible overlay is a separate tiny window.
+                    // Moving it never changes the WebView's window/viewport.
+                    wm.addView(
+                        iconRoot,
+                        createIconWindowLayoutParams(hostSide)
                     )
 
                     windowManager = wm
                     hostedWebView = webView
-                    overlayRoot = root
+                    webWindowRoot = webRoot
+                    iconWindowRoot = iconRoot
                     floatingButton = bubble
                     overlayAttached = true
                     installFloatingButtonTouch(
                         appContext,
                         wm,
-                        root,
+                        iconRoot,
                         bubble,
                         screenWidth,
                         screenHeight,
@@ -136,14 +161,17 @@ object WebViewOverlayHost {
 
                     AppLog.add(
                         "MICRO_OVERLAY",
-                        "host=" + hostSide + "x" + hostSide +
+                        "separate-windows icon=" + hostSide + "x" + hostSide +
                             " webview=" + screenWidth + "x" + screenHeight +
-                            " button_dp=" + FLOATING_BUTTON_DP
+                            " web_x=" + offscreenWebX(screenWidth)
                     )
                     true
                 }.getOrElse {
-                    root.removeView(webView)
-                    overlayRoot = null
+                    runCatching { wm.removeViewImmediate(iconRoot) }
+                    runCatching { wm.removeViewImmediate(webRoot) }
+                    runCatching { webRoot.removeView(webView) }
+                    webWindowRoot = null
+                    iconWindowRoot = null
                     floatingButton = null
                     hostedWebView = webView
                     overlayAttached = false
@@ -363,30 +391,38 @@ object WebViewOverlayHost {
             return
         }
 
-        webView.layoutParams =
-            backgroundWebViewLayoutParams(
-                width.coerceAtLeast(1),
-                height.coerceAtLeast(1)
-            )
+        webView.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
         backgroundWidth = width.coerceAtLeast(1)
         backgroundHeight = height.coerceAtLeast(1)
         webView.requestLayout()
     }
 
-    private fun backgroundWebViewLayoutParams(
+    private fun updateBackgroundWindowPosition(
         width: Int,
         height: Int
-    ): FrameLayout.LayoutParams =
-        FrameLayout.LayoutParams(
-            width.coerceAtLeast(1),
-            height.coerceAtLeast(1)
-        ).apply {
-            // Keep the full-size WebView attached and running, but move its
-            // entire rendered surface to the left of the tiny overlay host.
-            // The parent clips children, so no ChatGPT pixels are visible
-            // behind the floating control.
-            leftMargin = -width.coerceAtLeast(1) - 1
+    ) {
+        val root = webWindowRoot ?: return
+        val wm = windowManager ?: return
+        val params =
+            root.layoutParams as? WindowManager.LayoutParams
+                ?: return
+
+        params.width = width.coerceAtLeast(1)
+        params.height = height.coerceAtLeast(1)
+        params.gravity = Gravity.TOP or Gravity.START
+        params.x = offscreenWebX(width)
+        params.y = 0
+
+        runCatching {
+            wm.updateViewLayout(root, params)
         }
+    }
+
+    private fun offscreenWebX(screenWidth: Int): Int =
+        -screenWidth.coerceAtLeast(1) - OFFSCREEN_WEB_MARGIN_PX
 
     fun setHiddenForScreenshot(
         context: Context,
@@ -395,7 +431,7 @@ object WebViewOverlayHost {
     ): Boolean = runOnMainBlocking(timeoutMs) {
         synchronized(lock) {
             if (!overlayAttached) return@synchronized false
-            val root = overlayRoot ?: return@synchronized false
+            val root = iconWindowRoot ?: return@synchronized false
             val wm = windowManager ?: return@synchronized false
             val params =
                 root.layoutParams as? WindowManager.LayoutParams
@@ -471,8 +507,12 @@ object WebViewOverlayHost {
     fun restore(webView: WebView, container: FrameLayout) {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
-                val root = overlayRoot
-                if (root != null) {
+                iconWindowRoot?.let { root ->
+                    runCatching {
+                        windowManager?.removeViewImmediate(root)
+                    }
+                }
+                webWindowRoot?.let { root ->
                     runCatching {
                         windowManager?.removeViewImmediate(root)
                     }
@@ -488,7 +528,8 @@ object WebViewOverlayHost {
 
             overlayAttached = false
             captureHidden = false
-            overlayRoot = null
+            webWindowRoot = null
+            iconWindowRoot = null
             floatingButton = null
             backgroundWidth = 0
             backgroundHeight = 0
@@ -527,7 +568,12 @@ object WebViewOverlayHost {
     fun release(webView: WebView) {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
-                overlayRoot?.let { root ->
+                iconWindowRoot?.let { root ->
+                    runCatching {
+                        windowManager?.removeViewImmediate(root)
+                    }
+                }
+                webWindowRoot?.let { root ->
                     runCatching {
                         windowManager?.removeViewImmediate(root)
                     }
@@ -541,14 +587,35 @@ object WebViewOverlayHost {
 
             overlayAttached = false
             captureHidden = false
-            overlayRoot = null
+            webWindowRoot = null
+            iconWindowRoot = null
             floatingButton = null
             backgroundWidth = 0
             backgroundHeight = 0
         }
     }
 
-    private fun createMicroWindowLayoutParams(
+    private fun createBackgroundWindowLayoutParams(
+        width: Int,
+        height: Int
+    ): WindowManager.LayoutParams =
+        WindowManager.LayoutParams(
+            width.coerceAtLeast(1),
+            height.coerceAtLeast(1),
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = offscreenWebX(width)
+            y = 0
+            alpha = 1f
+        }
+
+    private fun createIconWindowLayoutParams(
         hostSide: Int
     ): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
@@ -591,4 +658,5 @@ object WebViewOverlayHost {
     private const val FLOATING_BUTTON_DP = 48f
     private const val FLOATING_DRAG_LONG_PRESS_MS = 2_000L
     private const val FLOATING_DRAG_VIBRATION_MS = 45L
+    private const val OFFSCREEN_WEB_MARGIN_PX = 32
 }
