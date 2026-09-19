@@ -53,6 +53,9 @@ class MainActivity : AppCompatActivity() {
     private var taskElapsedText: TextView? = null
     private var taskStartedAt = 0L
     private var taskTimerRunning = false
+    private var activeProcessHeader: TextView? = null
+    private var activeProcessBody: LinearLayout? = null
+    private var activeProcessStepCount = 0
     private var firstRunGuideLaunched = false
     private var lastTaskStatus: String? = null
     private val readinessHandler = Handler(Looper.getMainLooper())
@@ -147,19 +150,22 @@ class MainActivity : AppCompatActivity() {
             onNativeAssistantMessage = { text ->
                 runOnUiThread {
                     stopTaskElapsedTimer()
+                    collapseNativeProcess()
                     addNativeMessage("assistant", text)
                 }
             },
-            onNativeStep = {
+            onNativeStep = { step ->
                 taskRunning = true
                 updateComposerEnabled()
                 updateConnectionStatus()
+                addNativeStep(step)
             },
             onNativeTaskStatus = { status ->
                 runOnUiThread {
                     taskRunning = status == "进行中"
                     if (status == "成功" || status == "失败") {
                         stopTaskElapsedTimer()
+                        collapseNativeProcess()
                     }
                     updateComposerEnabled()
                     updateConnectionStatus(status)
@@ -222,16 +228,26 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.nativeStopButton.setOnClickListener {
+            if (!taskRunning) return@setOnClickListener
+
+            binding.nativeStopButton.isEnabled = false
             taskRunning = false
             stopTaskElapsedTimer()
+            collapseNativeProcess()
             updateComposerEnabled()
-            updateConnectionStatus("失败")
+            updateConnectionStatus("已停止")
+
             pageAdbBridge.stopAutomation { result ->
                 runOnUiThread {
+                    binding.nativeStopButton.isEnabled = true
                     addNativeMessage(
                         "system",
-                        "已停止当前生成与 ADB 自动化。" +
-                            if (result.isBlank()) "" else " (" + result + ")"
+                        "已停止当前任务。" +
+                            if (result.isBlank()) {
+                                ""
+                            } else {
+                                " (" + result + ")"
+                            }
                     )
                 }
             }
@@ -279,6 +295,7 @@ class MainActivity : AppCompatActivity() {
         updateComposerEnabled()
         updateConnectionStatus("进行中")
         addNativeMessage("user", text)
+        beginNativeProcess()
         startTaskElapsedTimer()
 
         pageAdbBridge.installForCurrentPage()
@@ -351,6 +368,7 @@ class MainActivity : AppCompatActivity() {
             taskRunning || lastTaskStatus == "进行中" -> "进行"
             lastTaskStatus == "成功" -> "完成"
             lastTaskStatus == "失败" -> "失败"
+            taskStatus == "已停止" -> ""
             else -> ""
         }
         WebViewOverlayHost.updateTaskStatus(overlayStatus)
@@ -484,6 +502,145 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun beginNativeProcess() {
+        activeProcessHeader = null
+        activeProcessBody = null
+        activeProcessStepCount = 0
+    }
+
+    private fun ensureNativeProcessBody(): LinearLayout {
+        activeProcessBody?.let { return it }
+
+        val density = resources.displayMetrics.density
+        val group = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (6 * density).toInt(),
+                (2 * density).toInt(),
+                (6 * density).toInt(),
+                (2 * density).toInt()
+            )
+        }
+
+        val header = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(105, 110, 120))
+            setPadding(
+                (4 * density).toInt(),
+                (4 * density).toInt(),
+                (4 * density).toInt(),
+                (4 * density).toInt()
+            )
+            visibility = View.GONE
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        group.addView(
+            header,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        group.addView(
+            body,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        binding.nativeMessageList.addView(
+            group,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                val margin = (6 * density).toInt()
+                setMargins(
+                    margin,
+                    margin,
+                    (36 * density).toInt(),
+                    0
+                )
+            }
+        )
+
+        activeProcessHeader = header
+        activeProcessBody = body
+        return body
+    }
+
+    private fun addNativeStep(step: String) {
+        if (step.isBlank()) return
+
+        runOnUiThread {
+            val density = resources.displayMetrics.density
+            val body = ensureNativeProcessBody()
+
+            val line = TextView(this).apply {
+                text = step
+                textSize = 12.5f
+                setTextColor(Color.rgb(105, 110, 120))
+                setTextIsSelectable(true)
+                setPadding(
+                    (4 * density).toInt(),
+                    (3 * density).toInt(),
+                    (4 * density).toInt(),
+                    (3 * density).toInt()
+                )
+            }
+
+            body.addView(
+                line,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            activeProcessStepCount += 1
+
+            binding.nativeMessageScroll.post {
+                binding.nativeMessageScroll.fullScroll(
+                    View.FOCUS_DOWN
+                )
+            }
+        }
+    }
+
+    private fun collapseNativeProcess() {
+        val header = activeProcessHeader ?: return
+        val body = activeProcessBody ?: return
+        if (activeProcessStepCount <= 0) return
+
+        val completedStepCount = activeProcessStepCount
+        body.visibility = View.GONE
+        header.visibility = View.VISIBLE
+
+        fun refreshHeader() {
+            header.text =
+                if (body.visibility == View.VISIBLE) {
+                    "过程（" + completedStepCount + "）⌄"
+                } else {
+                    "过程（" + completedStepCount + "）›"
+                }
+        }
+
+        refreshHeader()
+        header.setOnClickListener {
+            body.visibility =
+                if (body.visibility == View.VISIBLE) {
+                    View.GONE
+                } else {
+                    View.VISIBLE
+                }
+            refreshHeader()
+        }
+    }
+
     private fun startTaskElapsedTimer() {
         stopTaskElapsedTimer(removeView = false)
         taskStartedAt = SystemClock.elapsedRealtime()
@@ -553,11 +710,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun formatTaskElapsed(elapsedMs: Long): String {
-        return if (elapsedMs < 60_000L) {
-            val seconds = elapsedMs / 1000.0
-            "任务耗时 %.1f 秒".format(seconds)
+        val totalSeconds =
+            ((elapsedMs + 999L) / 1000L)
+                .coerceAtLeast(0L)
+
+        return if (totalSeconds < 60L) {
+            "任务耗时 " + totalSeconds + " 秒"
         } else {
-            val totalSeconds = elapsedMs / 1000L
             val minutes = totalSeconds / 60L
             val seconds = totalSeconds % 60L
             "任务耗时 " + minutes + "分 " + seconds + "秒"

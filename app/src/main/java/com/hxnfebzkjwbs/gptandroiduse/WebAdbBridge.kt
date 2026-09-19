@@ -31,6 +31,8 @@ class WebAdbBridge(
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
     private val executor = Executors.newSingleThreadExecutor()
+    private val cancellationExecutor =
+        Executors.newSingleThreadExecutor()
     private val sessionToken = ByteArray(24).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it) }
     private val inFlight = Collections.synchronizedSet(mutableSetOf<String>())
@@ -114,6 +116,18 @@ class WebAdbBridge(
     ) {
         stopGeneration.incrementAndGet()
         AppLog.add("STOP", "native stop requested")
+
+        cancellationExecutor.execute {
+            runCatching {
+                adb.disconnect()
+            }.onFailure {
+                AppLog.add(
+                    "STOP",
+                    "backend interrupt failed: " +
+                        (it.message ?: it.javaClass.simpleName)
+                )
+            }
+        }
 
         webView.post {
             val js =
@@ -517,13 +531,23 @@ class WebAdbBridge(
                 postStatus("Bridge: ready")
                 postResult(requestId, true, output)
             } catch (t: Throwable) {
+                if (stopGeneration.get() != executionGeneration) {
+                    postStatus(
+                        "Bridge: execution interrupted by user stop"
+                    )
+                    return@execute
+                }
+
                 val report = buildFailureReport(
                     requestId = requestId,
                     phase = failurePhase,
                     command = activeCommand,
                     throwable = t
                 )
-                postStatus("Bridge: error · " + (t.message ?: t.javaClass.simpleName))
+                postStatus(
+                    "Bridge: error · " +
+                        (t.message ?: t.javaClass.simpleName)
+                )
                 postResult(requestId, false, report)
             } finally {
                 inFlight.remove(requestId)
@@ -574,6 +598,7 @@ class WebAdbBridge(
     fun shutdown() {
         enabled = false
         executor.shutdownNow()
+        cancellationExecutor.shutdownNow()
         adb.disconnect()
     }
 
@@ -811,6 +836,8 @@ class WebAdbBridge(
           let nativeSendPending = false;
           let chatExperienceSelected = false;
           let chatExperienceLastAttemptAt = 0;
+          let userStopRequested = false;
+          let stopRetryTimer = null;
 
           const internalQueue = [];
           const sentInternalIds = new Set();
@@ -1069,15 +1096,34 @@ class WebAdbBridge(
 
           function isStopActionButton(button) {
             if (!button) return false;
-            const testId = (button.getAttribute('data-testid') || '').toLowerCase();
-            const aria = (button.getAttribute('aria-label') || '').toLowerCase();
-            const title = (button.getAttribute('title') || '').toLowerCase();
+            const testId =
+              (button.getAttribute('data-testid') || '').toLowerCase();
+            const aria =
+              (button.getAttribute('aria-label') || '').toLowerCase();
+            const title =
+              (button.getAttribute('title') || '').toLowerCase();
+            const text =
+              (button.innerText || button.textContent || '')
+                .trim()
+                .toLowerCase();
+            const child =
+              button.querySelector(
+                '[data-testid*="stop" i],' +
+                '[aria-label*="stop" i],' +
+                '[aria-label*="停止"],' +
+                '[title*="stop" i],' +
+                '[title*="停止"]'
+              );
+
             return testId === 'stop-button' ||
               testId.includes('stop') ||
               aria.includes('stop') ||
               aria.includes('停止') ||
               title.includes('stop') ||
-              title.includes('停止');
+              title.includes('停止') ||
+              text === 'stop' ||
+              text === '停止' ||
+              !!child;
           }
 
           function isSendActionButton(button) {
@@ -1095,12 +1141,84 @@ class WebAdbBridge(
           }
 
           function stopButtons() {
-            return Array.from(document.querySelectorAll(
-              '#composer-submit-button,' +
-              'button[data-testid="stop-button"],' +
-              'button[aria-label*="Stop" i],' +
-              'button[aria-label*="停止"]'
-            )).filter(isStopActionButton);
+            return uniqueElements(
+              Array.from(
+                document.querySelectorAll(
+                  'button,' +
+                  '[role="button"],' +
+                  '#composer-submit-button'
+                )
+              )
+            ).filter(button =>
+              isVisible(button) &&
+              !button.disabled &&
+              isStopActionButton(button)
+            );
+          }
+
+          function tryStopGeneration() {
+            const button = stopButtons()[0] || null;
+            if (!button) return false;
+
+            bypassNextSend = true;
+            try {
+              button.dispatchEvent(
+                new PointerEvent(
+                  'pointerdown',
+                  { bubbles: true, cancelable: true }
+                )
+              );
+              button.dispatchEvent(
+                new PointerEvent(
+                  'pointerup',
+                  { bubbles: true, cancelable: true }
+                )
+              );
+            } catch (_) {}
+
+            try {
+              button.click();
+            } catch (_) {
+              try {
+                button.dispatchEvent(
+                  new MouseEvent(
+                    'click',
+                    { bubbles: true, cancelable: true }
+                  )
+                );
+              } catch (_) {}
+            }
+
+            nativeStatus(
+              'USER_STOP_CLICK',
+              button.id ||
+                button.getAttribute('data-testid') ||
+                button.getAttribute('aria-label') ||
+                'button'
+            );
+            return true;
+          }
+
+          function scheduleStopRetry() {
+            if (stopRetryTimer) {
+              clearTimeout(stopRetryTimer);
+            }
+            const startedAt = Date.now();
+
+            function retry() {
+              stopRetryTimer = null;
+              if (!userStopRequested) return;
+
+              if (tryStopGeneration()) {
+                return;
+              }
+
+              if (Date.now() - startedAt < 2500) {
+                stopRetryTimer = setTimeout(retry, 120);
+              }
+            }
+
+            retry();
           }
 
           function isStreaming() {
@@ -1799,6 +1917,8 @@ class WebAdbBridge(
 
           window.__gptAndroidUseStopAutomation = function() {
             try {
+              userStopRequested = true;
+
               if (transactionTimer) {
                 clearTimeout(transactionTimer);
                 transactionTimer = null;
@@ -1811,32 +1931,41 @@ class WebAdbBridge(
               internalQueue.splice(0, internalQueue.length);
               oneTapPending = false;
               nativeSendPending = false;
+              internalSendInProgress = false;
 
               if (activeTransaction) {
                 finishTransaction('user-stop');
               }
 
-              const stopButton = stopButtons().find(button =>
-                isVisible(button) && !button.disabled
-              );
-              if (stopButton) {
-                bypassNextSend = true;
-                stopButton.click();
+              const clicked = tryStopGeneration();
+              if (!clicked) {
+                scheduleStopRetry();
               }
 
               nativeStatus(
                 'USER_STOP',
-                stopButton ? 'generation-and-automation' : 'automation'
+                clicked ?
+                  'generation-and-automation' :
+                  'automation-stop-pending'
               );
-              return stopButton ? 'stopped-generation' : 'stopped';
+              return clicked ?
+                'stopped-generation' :
+                'stop-requested';
             } catch (e) {
-              nativeStatus('USER_STOP_ERROR', String(e));
+              nativeStatus(
+                'USER_STOP_ERROR',
+                String(e)
+              );
               return 'error:' + String(e);
             }
           };
 
           window.__gptAndroidUseBackgroundTick = function() {
             if (!enabled) return 'disabled';
+            if (userStopRequested) {
+              tryStopGeneration();
+              return 'stopped';
+            }
 
             try {
               if (activeTransaction) {
@@ -1862,6 +1991,12 @@ class WebAdbBridge(
 
           window.__gptAndroidUseNativeSend = function(text) {
             if (!enabled) return 'disabled';
+
+            userStopRequested = false;
+            if (stopRetryTimer) {
+              clearTimeout(stopRetryTimer);
+              stopRetryTimer = null;
+            }
             if (!selectChatExperience()) return 'switching-to-chat';
             if (isStreaming()) return 'streaming';
             if (nativeSendPending) return 'busy';

@@ -11,8 +11,8 @@ android {
         applicationId = "com.hxnfebzkjwbs.gptandroiduse"
         minSdk = 30
         targetSdk = 35
-        versionCode = 85
-        versionName = "0.15.0"
+        versionCode = 86
+        versionName = "0.15.1"
     }
 
     flavorDimensions += "controlMode"
