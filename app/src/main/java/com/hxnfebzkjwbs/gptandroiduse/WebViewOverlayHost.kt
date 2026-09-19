@@ -185,7 +185,7 @@ object WebViewOverlayHost {
         context: Context,
         wm: WindowManager,
         root: FrameLayout,
-        bubble: TextView,
+        bubble: FloatingStatusView,
         screenWidth: Int,
         screenHeight: Int,
         hostSide: Int
