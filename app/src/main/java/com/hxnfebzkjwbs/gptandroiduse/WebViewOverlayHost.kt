@@ -28,10 +28,9 @@ object WebViewOverlayHost {
 
             val wm = context.applicationContext
                 .getSystemService(WindowManager::class.java)
-            val size = dp(context, 8)
             val params = WindowManager.LayoutParams(
-                size,
-                size,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -42,19 +41,25 @@ object WebViewOverlayHost {
                 gravity = Gravity.TOP or Gravity.START
                 x = 0
                 y = 0
-                alpha = 0.02f
+                alpha = 0.01f
             }
 
             return runCatching {
                 if (overlayAttached && hostedWebView != null) {
                     runCatching { windowManager?.removeViewImmediate(hostedWebView) }
                 }
+                webView.importantForAccessibility =
+                    WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 wm.addView(webView, params)
                 windowManager = wm
                 hostedWebView = webView
                 overlayAttached = true
                 webView.visibility = WebView.VISIBLE
                 webView.resumeTimers()
+                webView.post {
+                    webView.requestLayout()
+                    webView.invalidate()
+                }
                 true
             }.getOrElse {
                 overlayAttached = false
@@ -85,8 +90,13 @@ object WebViewOverlayHost {
                     )
                 )
             }
+            webView.importantForAccessibility = WebView.IMPORTANT_FOR_ACCESSIBILITY_AUTO
             webView.visibility = WebView.VISIBLE
             webView.resumeTimers()
+            webView.post {
+                webView.requestLayout()
+                webView.invalidate()
+            }
         }
     }
 
@@ -99,7 +109,4 @@ object WebViewOverlayHost {
             overlayAttached = false
         }
     }
-
-    private fun dp(context: Context, value: Int): Int =
-        (value * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
 }
