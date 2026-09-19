@@ -15,7 +15,6 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
-import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
@@ -23,7 +22,6 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 object WebViewOverlayHost {
@@ -205,17 +203,13 @@ object WebViewOverlayHost {
         screenHeight: Int,
         hostSide: Int
     ) {
-        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-        var downX = 0f
-        var downY = 0f
         var currentRawX = 0f
         var currentRawY = 0f
         var dragStartRawX = 0f
         var dragStartRawY = 0f
-        var startX = 0
-        var startY = 0
+        var windowStartX = 0
+        var windowStartY = 0
         var pointerDown = false
-        var movedBeforeLongPress = false
         var dragUnlocked = false
 
         bubble.isHapticFeedbackEnabled = true
@@ -227,11 +221,15 @@ object WebViewOverlayHost {
                 root.layoutParams as? WindowManager.LayoutParams
                     ?: return@Runnable
 
+            // Exactly two seconds after ACTION_DOWN, while the finger is
+            // still held: vibrate once and begin drag tracking from the
+            // finger's current position. Movement before this moment neither
+            // moves the bubble nor cancels the timer.
             dragUnlocked = true
             dragStartRawX = currentRawX
             dragStartRawY = currentRawY
-            startX = params.x
-            startY = params.y
+            windowStartX = params.x
+            windowStartY = params.y
             bubble.alpha = 1f
 
             val hapticDone =
@@ -256,12 +254,9 @@ object WebViewOverlayHost {
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = event.rawX
-                    downY = event.rawY
                     currentRawX = event.rawX
                     currentRawY = event.rawY
                     pointerDown = true
-                    movedBeforeLongPress = false
                     dragUnlocked = false
                     bubble.alpha = 0.72f
 
@@ -277,25 +272,19 @@ object WebViewOverlayHost {
                     currentRawX = event.rawX
                     currentRawY = event.rawY
 
-                    val preLongPressDistance =
-                        hypot(
-                            (event.rawX - downX).toDouble(),
-                            (event.rawY - downY).toDouble()
-                        ).toFloat()
-                    if (preLongPressDistance > touchSlop) {
-                        movedBeforeLongPress = true
-                    }
-
                     if (dragUnlocked) {
                         val dx = event.rawX - dragStartRawX
                         val dy = event.rawY - dragStartRawY
                         val maxX = (screenWidth - hostSide).coerceAtLeast(0)
                         val maxY = (screenHeight - hostSide).coerceAtLeast(0)
 
+                        // Window uses END|BOTTOM gravity, so x/y are distances
+                        // from the right/bottom edges; subtract finger deltas.
                         params.x =
-                            (startX - dx.roundToInt()).coerceIn(0, maxX)
+                            (windowStartX - dx.roundToInt()).coerceIn(0, maxX)
                         params.y =
-                            (startY - dy.roundToInt()).coerceIn(0, maxY)
+                            (windowStartY - dy.roundToInt()).coerceIn(0, maxY)
+
                         overlayX = params.x
                         overlayY = params.y
 
@@ -307,11 +296,16 @@ object WebViewOverlayHost {
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    val wasDragging = dragUnlocked
                     pointerDown = false
+                    dragUnlocked = false
                     mainHandler.removeCallbacks(longPressRunnable)
                     bubble.alpha = 1f
 
-                    if (!dragUnlocked && !movedBeforeLongPress) {
+                    // A release before the two-second unlock remains the
+                    // normal short-click behavior. A release after unlock
+                    // simply fixes the bubble at its current position.
+                    if (!wasDragging) {
                         openMainActivity(context)
                     }
                     true
@@ -319,6 +313,7 @@ object WebViewOverlayHost {
 
                 MotionEvent.ACTION_CANCEL -> {
                     pointerDown = false
+                    dragUnlocked = false
                     mainHandler.removeCallbacks(longPressRunnable)
                     bubble.alpha = 1f
                     true
