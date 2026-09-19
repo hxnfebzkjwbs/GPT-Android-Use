@@ -380,12 +380,12 @@ class TextInputAccessibilityService : AccessibilityService() {
             }
 
     private fun quoteUi(value: String): String =
-        """ + value
+        "\"" + value
             .replace("\\", "\\\\")
-            .replace(""", "\\"")
+            .replace("\"", "\\\"")
             .replace("\n", " ")
             .replace("\r", " ")
-            .take(160) + """
+            .take(160) + "\""
 
     companion object {
         @Volatile
