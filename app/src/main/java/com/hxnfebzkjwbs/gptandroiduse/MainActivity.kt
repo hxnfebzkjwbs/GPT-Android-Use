@@ -8,8 +8,6 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.view.View
-import android.widget.FrameLayout
-import android.widget.SeekBar
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -76,7 +74,6 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         pageAdbBridge.setEnabled(true)
         binding.bridgeStatusText.text = "Bridge: ON"
-        configureOverlayOpacity()
         ensureOverlayCapability()
 
         if (savedInstanceState == null) {
@@ -128,99 +125,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun configureOverlayOpacity() {
-        val initial = OverlaySettings.getOpacityPercent(this)
-        val overlayEnabled =
-            OverlaySettings.isCompatibilityOverlayEnabled(this)
-
-        binding.compatibilityOverlaySwitch.isChecked = overlayEnabled
-        binding.overlayOpacitySeek.isEnabled = overlayEnabled
-        binding.overlayOpacityLabel.text =
-            if (overlayEnabled) "Overlay " + initial + "%"
-            else "Overlay 已关闭"
-        binding.overlayOpacitySeek.progress = initial - 1
-
-        binding.compatibilityOverlaySwitch.setOnCheckedChangeListener { _, checked ->
-            OverlaySettings.setCompatibilityOverlayEnabled(
-                this@MainActivity,
-                checked
-            )
-            binding.overlayOpacitySeek.isEnabled = checked
-            binding.overlayOpacityLabel.text =
-                if (checked) {
-                    "Overlay " +
-                        OverlaySettings.getOpacityPercent(this@MainActivity) +
-                        "%"
-                } else {
-                    "Overlay 已关闭"
-                }
-
-            if (checked) {
-                ensureOverlayCapability()
-            }
-            AppLog.add(
-                "BACKGROUND_MODE",
-                "compatibility_overlay=" + checked
-            )
-        }
-
-        binding.overlayOpacitySeek.setOnSeekBarChangeListener(
-            object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(
-                    seekBar: SeekBar?,
-                    progress: Int,
-                    fromUser: Boolean
-                ) {
-                    val percent = progress + 1
-                    if (
-                        OverlaySettings.isCompatibilityOverlayEnabled(
-                            this@MainActivity
-                        )
-                    ) {
-                        binding.overlayOpacityLabel.text =
-                            "Overlay " + percent + "%"
-                    }
-                    if (!fromUser) return
-
-                    OverlaySettings.setOpacityPercent(this@MainActivity, percent)
-                    WebViewOverlayHost.updateOpacity(this@MainActivity)
-                    if (Settings.canDrawOverlays(this@MainActivity)) {
-                        ContextCompat.startForegroundService(
-                            this@MainActivity,
-                            Intent(
-                                this@MainActivity,
-                                OverlayKeepAliveService::class.java
-                            ).setAction(OverlayKeepAliveService.ACTION_UPDATE_OPACITY)
-                        )
-                    }
-                    AppLog.add("OVERLAY", "opacity=" + percent + "%")
-                }
-
-                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-            }
-        )
-    }
-
     private fun ensureOverlayCapability() {
-        if (!OverlaySettings.isCompatibilityOverlayEnabled(this)) {
-            startOverlayService()
-            return
-        }
         if (Settings.canDrawOverlays(this)) {
             startOverlayService()
             return
         }
+
         if (overlayPromptShown) return
         overlayPromptShown = true
 
         AlertDialog.Builder(this)
-            .setTitle("Allow display over other apps")
+            .setTitle("需要“显示在其他应用上层”权限")
             .setMessage(
-                "This permission keeps the same ChatGPT WebView active while another app, such as WeChat, is in front. " +
-                    "The overlay does not accept touch input."
+                "后台模式只使用一个按当前设备尺寸动态计算的微型窗口；" +
+                    "ChatGPT WebView 自身仍保持当前设备的完整屏幕尺寸，" +
+                    "不会再把网页压成小窗口。"
             )
-            .setPositiveButton("Open settings") { _, _ ->
+            .setPositiveButton("打开设置") { _, _ ->
                 startActivity(
                     Intent(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -228,11 +149,12 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
             }
-            .setNegativeButton("Not now", null)
+            .setNegativeButton("暂不", null)
             .show()
     }
 
     private fun startOverlayService() {
+        if (!Settings.canDrawOverlays(this)) return
         ContextCompat.startForegroundService(
             this,
             Intent(this, OverlayKeepAliveService::class.java)
@@ -249,15 +171,21 @@ class MainActivity : AppCompatActivity() {
             binding.chatWebView.resumeTimers()
             pageAdbBridge.installForCurrentPage()
         }
+        ensureOverlayCapability()
         startOverlayService()
     }
 
     override fun onStop() {
         if (!isFinishing && ::binding.isInitialized) {
             startOverlayService()
-            WebViewOverlayHost.moveToBackground(
-                applicationContext,
-                binding.chatWebView
+            val backgroundAttached =
+                WebViewOverlayHost.moveToBackground(
+                    applicationContext,
+                    binding.chatWebView
+                )
+            AppLog.add(
+                "MICRO_OVERLAY",
+                "onStop attached=" + backgroundAttached
             )
         }
         super.onStop()

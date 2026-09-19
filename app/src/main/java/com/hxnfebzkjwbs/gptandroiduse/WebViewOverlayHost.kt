@@ -12,85 +12,132 @@ import android.webkit.WebView
 import android.widget.FrameLayout
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.ceil
+import kotlin.math.min
 
 object WebViewOverlayHost {
     private val lock = Any()
     private var windowManager: WindowManager? = null
     private var hostedWebView: WebView? = null
+    private var overlayRoot: FrameLayout? = null
     private var overlayAttached = false
-    private var backgroundDetached = false
     private var captureHidden = false
+    private var backgroundWidth = 0
+    private var backgroundHeight = 0
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun moveToBackground(context: Context, webView: WebView): Boolean =
-        runOnMainBlocking(1_000L) {
+        runOnMainBlocking(1_200L) {
             synchronized(lock) {
+                if (!Settings.canDrawOverlays(context)) {
+                    AppLog.add(
+                        "MICRO_OVERLAY",
+                        "permission missing; cannot keep WebView attached"
+                    )
+                    return@synchronized false
+                }
+
+                val appContext = context.applicationContext
+                val wm = appContext.getSystemService(WindowManager::class.java)
+                val bounds = wm.currentWindowMetrics.bounds
+                val screenWidth = bounds.width().coerceAtLeast(1)
+                val screenHeight = bounds.height().coerceAtLeast(1)
+                val minSide = min(screenWidth, screenHeight)
+
+                // Tiny visible host is derived from the actual device size.
+                val hostSide =
+                    ceil(minSide * MICRO_WINDOW_FRACTION).toInt().coerceAtLeast(1)
+
+                if (overlayAttached && hostedWebView === webView) {
+                    resizeBackgroundWebView(
+                        webView,
+                        screenWidth,
+                        screenHeight
+                    )
+                    webView.resumeTimers()
+                    webView.onResume()
+                    return@synchronized true
+                }
+
                 (webView.parent as? ViewGroup)?.removeView(webView)
-                hostedWebView = webView
 
-                val useOverlay =
-                    OverlaySettings.isCompatibilityOverlayEnabled(context) &&
-                        Settings.canDrawOverlays(context)
-
-                if (useOverlay) {
-                    val wm = context.applicationContext
-                        .getSystemService(WindowManager::class.java)
-
-                    return@synchronized runCatching {
-                        if (overlayAttached) {
-                            runCatching {
-                                windowManager?.removeViewImmediate(webView)
-                            }
-                        }
-
-                        webView.importantForAccessibility =
-                            WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                        wm.addView(webView, createLayoutParams(context))
-
-                        windowManager = wm
-                        overlayAttached = true
-                        backgroundDetached = false
-                        captureHidden = false
-
-                        webView.visibility = WebView.VISIBLE
-                        webView.resumeTimers()
-                        webView.onResume()
-                        AppLog.add("BACKGROUND_MODE", "overlay")
-                        true
-                    }.getOrElse {
-                        overlayAttached = false
-                        backgroundDetached = true
-                        AppLog.add(
-                            "BACKGROUND_MODE",
-                            "overlay failed, falling back to detached: " +
-                                (it.message ?: it.javaClass.simpleName)
-                        )
-                        prepareDetached(webView)
-                        true
-                    }
+                val root = FrameLayout(appContext).apply {
+                    clipChildren = true
+                    clipToPadding = true
+                    importantForAccessibility =
+                        FrameLayout.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                    alpha = MICRO_WINDOW_ALPHA
                 }
 
-                if (overlayAttached) {
-                    runCatching {
-                        windowManager?.removeViewImmediate(webView)
-                    }
+                webView.importantForAccessibility =
+                    WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                webView.visibility = WebView.VISIBLE
+                webView.layoutParams = FrameLayout.LayoutParams(
+                    screenWidth,
+                    screenHeight
+                )
+                root.addView(webView)
+
+                return@synchronized runCatching {
+                    wm.addView(
+                        root,
+                        createMicroWindowLayoutParams(hostSide)
+                    )
+
+                    windowManager = wm
+                    hostedWebView = webView
+                    overlayRoot = root
+                    overlayAttached = true
+                    captureHidden = false
+                    backgroundWidth = screenWidth
+                    backgroundHeight = screenHeight
+
+                    webView.resumeTimers()
+                    webView.onResume()
+                    webView.requestLayout()
+                    webView.invalidate()
+
+                    AppLog.add(
+                        "MICRO_OVERLAY",
+                        "host=" + hostSide + "x" + hostSide +
+                            " webview=" + screenWidth + "x" + screenHeight +
+                            " alpha=" + MICRO_WINDOW_ALPHA
+                    )
+                    true
+                }.getOrElse {
+                    root.removeView(webView)
+                    overlayRoot = null
+                    hostedWebView = webView
                     overlayAttached = false
+                    AppLog.add(
+                        "MICRO_OVERLAY",
+                        "attach failed: " +
+                            (it.message ?: it.javaClass.simpleName)
+                    )
+                    false
                 }
-
-                backgroundDetached = true
-                captureHidden = false
-                prepareDetached(webView)
-                AppLog.add("BACKGROUND_MODE", "detached")
-                true
             }
         }
 
-    private fun prepareDetached(webView: WebView) {
-        webView.importantForAccessibility =
-            WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        webView.visibility = WebView.VISIBLE
-        webView.resumeTimers()
-        webView.onResume()
+    private fun resizeBackgroundWebView(
+        webView: WebView,
+        width: Int,
+        height: Int
+    ) {
+        if (
+            width == backgroundWidth &&
+            height == backgroundHeight
+        ) {
+            return
+        }
+
+        webView.layoutParams = FrameLayout.LayoutParams(
+            width.coerceAtLeast(1),
+            height.coerceAtLeast(1)
+        )
+        backgroundWidth = width.coerceAtLeast(1)
+        backgroundHeight = height.coerceAtLeast(1)
+        webView.requestLayout()
     }
 
     fun setHiddenForScreenshot(
@@ -100,21 +147,38 @@ object WebViewOverlayHost {
     ): Boolean = runOnMainBlocking(timeoutMs) {
         synchronized(lock) {
             if (!overlayAttached) return@synchronized false
-            val webView = hostedWebView ?: return@synchronized false
+            val root = overlayRoot ?: return@synchronized false
             val wm = windowManager ?: return@synchronized false
             val params =
-                webView.layoutParams as? WindowManager.LayoutParams
+                root.layoutParams as? WindowManager.LayoutParams
                     ?: return@synchronized false
 
-            val newAlpha =
-                if (hidden) 0f else OverlaySettings.getOpacity(context)
+            val newAlpha = if (hidden) 0f else MICRO_WINDOW_ALPHA
+            if (params.alpha == newAlpha && captureHidden == hidden) {
+                return@synchronized true
+            }
 
             params.alpha = newAlpha
+            root.alpha = newAlpha
+
             runCatching {
-                wm.updateViewLayout(webView, params)
+                wm.updateViewLayout(root, params)
                 captureHidden = hidden
+                AppLog.add(
+                    "MICRO_OVERLAY",
+                    if (hidden) {
+                        "hidden for screenshot"
+                    } else {
+                        "restored after screenshot"
+                    }
+                )
                 true
             }.getOrElse {
+                AppLog.add(
+                    "MICRO_OVERLAY",
+                    "alpha update failed: " +
+                        (it.message ?: it.javaClass.simpleName)
+                )
                 false
             }
         }
@@ -135,8 +199,8 @@ object WebViewOverlayHost {
                         "JS_KEEPALIVE",
                         "callback=" + value.take(96) +
                             " mode=" +
-                            if (overlayAttached) "overlay" else
-                                if (backgroundDetached) "detached" else "activity"
+                            if (overlayAttached) "micro-overlay"
+                            else "activity"
                     )
                 }
                 true
@@ -152,30 +216,33 @@ object WebViewOverlayHost {
     }
 
     fun updateOpacity(context: Context) {
-        synchronized(lock) {
-            if (!overlayAttached || captureHidden) return
-            val webView = hostedWebView ?: return
-            val wm = windowManager ?: return
-            val params =
-                webView.layoutParams as? WindowManager.LayoutParams ?: return
-            params.alpha = OverlaySettings.getOpacity(context)
-            runCatching { wm.updateViewLayout(webView, params) }
-        }
+        // 0.9.2 uses a fixed near-invisible micro window. Kept as no-op
+        // so older service/UI calls remain binary-compatible.
     }
 
     fun restore(webView: WebView, container: FrameLayout) {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
-                runCatching { windowManager?.removeViewImmediate(webView) }
+                val root = overlayRoot
+                if (root != null) {
+                    runCatching {
+                        windowManager?.removeViewImmediate(root)
+                    }
+                    runCatching { root.removeView(webView) }
+                }
             } else {
                 (webView.parent as? ViewGroup)?.let { parent ->
-                    if (parent !== container) parent.removeView(webView)
+                    if (parent !== container) {
+                        parent.removeView(webView)
+                    }
                 }
             }
 
             overlayAttached = false
-            backgroundDetached = false
             captureHidden = false
+            overlayRoot = null
+            backgroundWidth = 0
+            backgroundHeight = 0
             hostedWebView = webView
 
             if (webView.parent !== container) {
@@ -185,6 +252,11 @@ object WebViewOverlayHost {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
+                )
+            } else {
+                webView.layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
                 )
             }
 
@@ -197,28 +269,40 @@ object WebViewOverlayHost {
                 webView.requestLayout()
                 webView.invalidate()
             }
-            AppLog.add("BACKGROUND_MODE", "activity")
+
+            AppLog.add("MICRO_OVERLAY", "restored to activity")
         }
     }
 
     fun release(webView: WebView) {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
-                runCatching { windowManager?.removeViewImmediate(webView) }
+                overlayRoot?.let { root ->
+                    runCatching {
+                        windowManager?.removeViewImmediate(root)
+                    }
+                    runCatching { root.removeView(webView) }
+                }
             }
-            if (hostedWebView === webView) hostedWebView = null
+
+            if (hostedWebView === webView) {
+                hostedWebView = null
+            }
+
             overlayAttached = false
-            backgroundDetached = false
             captureHidden = false
+            overlayRoot = null
+            backgroundWidth = 0
+            backgroundHeight = 0
         }
     }
 
-    private fun createLayoutParams(
-        context: Context
+    private fun createMicroWindowLayoutParams(
+        hostSide: Int
     ): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
+            hostSide,
+            hostSide,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -226,10 +310,10 @@ object WebViewOverlayHost {
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            gravity = Gravity.BOTTOM or Gravity.END
             x = 0
             y = 0
-            alpha = OverlaySettings.getOpacity(context)
+            alpha = MICRO_WINDOW_ALPHA
         }
 
     private fun runOnMainBlocking(
@@ -242,6 +326,7 @@ object WebViewOverlayHost {
 
         val latch = CountDownLatch(1)
         var result = false
+
         mainHandler.post {
             try {
                 result = action()
@@ -249,6 +334,10 @@ object WebViewOverlayHost {
                 latch.countDown()
             }
         }
+
         return latch.await(timeoutMs, TimeUnit.MILLISECONDS) && result
     }
+
+    private const val MICRO_WINDOW_FRACTION = 0.001f
+    private const val MICRO_WINDOW_ALPHA = 0.01f
 }
