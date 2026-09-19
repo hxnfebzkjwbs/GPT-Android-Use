@@ -168,9 +168,23 @@ class WebAdbBridge(
             var failurePhase = "parse"
             var activeCommand = ""
             try {
+                val stepDescription = parseStepDescription(payload)
+                if (stepDescription == null) {
+                    postResult(
+                        requestId,
+                        false,
+                        "ADB_EXEC block rejected: missing required STEP description.\n" +
+                            "Use exactly:\nADB_EXEC\nSTEP: 用一句中文说明这一步做什么以及依据\n<one adb shell command>"
+                    )
+                    return@execute
+                }
+
+                postStatus("步骤：" + stepDescription)
+                AppLog.add("STEP", stepDescription)
+
                 val commands = parseCommands(payload)
                 if (commands.isEmpty()) {
-                    postResult(requestId, false, "ADB_EXEC block contains no commands")
+                    postResult(requestId, false, "ADB_EXEC block contains no command after STEP")
                     return@execute
                 }
                 if (commands.size > MAX_COMMANDS_PER_BLOCK) {
@@ -393,13 +407,29 @@ class WebAdbBridge(
         return parts.joinToString(" <- ")
     }
 
+    private fun parseStepDescription(payload: String): String? {
+        if (payload.length > MAX_BLOCK_CHARS) return null
+        val lines = payload.replace("\r", "").lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        if (lines.size < 3 || lines.first() != EXEC_MARKER) return null
+        val stepLine = lines[1]
+        if (!stepLine.startsWith(STEP_MARKER, ignoreCase = true)) return null
+        return stepLine.substringAfter(":").trim()
+            .takeIf { it.length >= MIN_STEP_DESCRIPTION_CHARS }
+    }
+
     private fun parseCommands(payload: String): List<String> {
         if (payload.length > MAX_BLOCK_CHARS) return emptyList()
         val lines = payload.replace("\r", "").lines()
-        if (lines.isEmpty() || lines.first().trim() != EXEC_MARKER) return emptyList()
-        return lines.drop(1)
             .map { it.trim() }
             .filter { it.isNotBlank() && !it.startsWith("#") }
+
+        if (lines.size < 3 || lines.first() != EXEC_MARKER) return emptyList()
+        if (!lines[1].startsWith(STEP_MARKER, ignoreCase = true)) return emptyList()
+
+        return lines.drop(2)
     }
 
     private fun postResult(requestId: String, ok: Boolean, output: String) {
@@ -442,8 +472,9 @@ class WebAdbBridge(
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
             '\n\n' + PROTOCOL_TAG + '\n' +
-            'If this request requires Android device access, first write ONE short sentence in Chinese explaining what this next step does and what evidence from the latest result justifies it. ' +
-            'Then output exactly one fenced code block. The first line inside the block must be ADB_EXEC. Put exactly ONE adb shell command on the next line, ' +
+            'If this request requires Android device access, output exactly one fenced code block using this mandatory three-line format: ' +
+            'ADB_EXEC, then STEP: followed by ONE short Chinese sentence explaining what this step does and what evidence justifies it, then exactly ONE adb shell command. ' +
+            'The native bridge rejects commands that do not contain the STEP line. ' +
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
             'Never tap guessed coordinates. An input tap must be justified by a visible clickable=true node and its bounds from the latest UI_SNAPSHOT. ' +
@@ -455,7 +486,7 @@ class WebAdbBridge(
             'Do not cat UI XML files, do not choose your own dump path, and do not use shell redirection such as > /dev/null; ' +
             'the native bridge captures the hierarchy in memory and returns UI_SNAPSHOT itself. ' +
             'UI-changing commands may also return a UI_SNAPSHOT automatically; use its text, resource ids, clickable flags and bounds. ' +
-            'Keep the explanation to one short sentence. If no device action is needed, answer normally.';
+            'Keep STEP to one short sentence. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
           const PHASE_EXECUTING = 'EXECUTING';
@@ -1123,7 +1154,7 @@ class WebAdbBridge(
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
               'The device command has finished. Inspect this result before deciding the next action. ' +
-              'If the original request still needs device work, first explain the next step in one short Chinese sentence, then issue exactly ONE next ADB_EXEC command. ' +
+              'If the original request still needs device work, the next code block MUST be: ADB_EXEC, then STEP: <one short Chinese sentence>, then exactly ONE command. ' +
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
               'Do not batch multiple commands. Never tap guessed coordinates; input tap must correspond to a clickable=true node in the latest UI_SNAPSHOT. ' +
               'If the target control cannot be identified after two inspection/navigation attempts, stop rather than trying random taps. ' +
@@ -1168,8 +1199,8 @@ class WebAdbBridge(
             }
 
             const prompt =
-              '请通过 Android ADB 读取当前手机电池状态。先用一句话说明这一步是读取电池状态。' +
-              '然后返回一个代码块，第一行必须是 ADB_EXEC，下一行使用 dumpsys battery。' +
+              '请通过 Android ADB 读取当前手机电池状态。严格返回一个代码块：' +
+              '第一行 ADB_EXEC，第二行 STEP: 读取当前手机电池状态，第三行 dumpsys battery。' +
               BRIDGE_HINT;
 
             oneTapPending = true;
@@ -1321,6 +1352,8 @@ class WebAdbBridge(
 
     companion object {
         private const val EXEC_MARKER = "ADB_EXEC"
+        private const val STEP_MARKER = "STEP:"
+        private const val MIN_STEP_DESCRIPTION_CHARS = 4
         private const val MAX_COMMANDS_PER_BLOCK = 1
         private const val MAX_BLOCK_CHARS = 6_000
         private const val MAX_SINGLE_RESULT_CHARS = 6_000

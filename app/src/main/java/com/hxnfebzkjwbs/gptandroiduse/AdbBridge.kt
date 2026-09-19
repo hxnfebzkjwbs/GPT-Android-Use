@@ -257,9 +257,20 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }
 
         try {
-            val raw = runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
-            val xml = extractHierarchyXml(raw)
-            val summary = summarizeUiXml(xml)
+            var xml = extractHierarchyXml(
+                runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
+            )
+            var attempts = 1
+
+            while (countXmlNodes(xml) == 0 && attempts < UI_DUMP_MAX_ATTEMPTS) {
+                Thread.sleep(UI_DUMP_RETRY_DELAY_MS)
+                xml = extractHierarchyXml(
+                    runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
+                )
+                attempts += 1
+            }
+
+            val summary = summarizeUiXml(xml, attempts)
             lastStage = "ui_observe_ok"
             lastError = "none"
             summary
@@ -606,15 +617,37 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         return raw.substring(start, end + endTag.length)
     }
 
-    private fun summarizeUiXml(xml: String): String {
+    private fun countXmlNodes(xml: String): Int {
+        val parser = XmlPullParserFactory.newInstance().newPullParser()
+        parser.setInput(xml.reader())
+        var count = 0
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            if (event == XmlPullParser.START_TAG && parser.name == "node") {
+                count += 1
+            }
+            event = parser.next()
+        }
+        return count
+    }
+
+    private fun summarizeUiXml(xml: String, attempts: Int): String {
         val parser = XmlPullParserFactory.newInstance().newPullParser()
         parser.setInput(xml.reader())
 
         val lines = ArrayList<String>()
+        val structuralLines = ArrayList<String>()
         val clickableTargets = ArrayList<UiTapTarget>()
+        val packages = linkedSetOf<String>()
+        var rawNodes = 0
+        var meaningfulNodes = 0
+        var clickableNodes = 0
+
         var event = parser.eventType
-        while (event != XmlPullParser.END_DOCUMENT && lines.size < MAX_UI_NODES) {
+        while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG && parser.name == "node") {
+                rawNodes += 1
+
                 fun attr(name: String): String =
                     parser.getAttributeValue(null, name).orEmpty().trim()
 
@@ -622,11 +655,31 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                 val desc = attr("content-desc")
                 val resourceId = attr("resource-id")
                 val className = attr("class")
+                val packageName = attr("package")
                 val clickable = attr("clickable")
                 val enabled = attr("enabled")
                 val bounds = attr("bounds")
                 val selected = attr("selected")
                 val checked = attr("checked")
+
+                if (packageName.isNotBlank()) packages += packageName
+
+                if (clickable == "true" && enabled != "false") {
+                    clickableNodes += 1
+                    if (bounds.isNotBlank()) {
+                        parseBounds(bounds)?.let { parsed ->
+                            val label = when {
+                                text.isNotBlank() -> "text=" + text.take(80)
+                                desc.isNotBlank() -> "desc=" + desc.take(80)
+                                resourceId.isNotBlank() -> "id=" + resourceId.take(120)
+                                else -> "bounds=" + bounds
+                            }
+                            clickableTargets += UiTapTarget(
+                                parsed[0], parsed[1], parsed[2], parsed[3], label
+                            )
+                        }
+                    }
+                }
 
                 val meaningful =
                     text.isNotBlank() ||
@@ -634,34 +687,27 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                     resourceId.isNotBlank() ||
                     clickable == "true"
 
-                if (clickable == "true" && enabled != "false" && bounds.isNotBlank()) {
-                    parseBounds(bounds)?.let { parsed ->
-                        val label = when {
-                            text.isNotBlank() -> "text=" + text.take(80)
-                            desc.isNotBlank() -> "desc=" + desc.take(80)
-                            resourceId.isNotBlank() -> "id=" + resourceId.take(120)
-                            else -> "bounds=" + bounds
-                        }
-                        clickableTargets += UiTapTarget(
-                            parsed[0], parsed[1], parsed[2], parsed[3], label
-                        )
+                val item = buildString {
+                    append("node")
+                    if (text.isNotBlank()) append(" text=").append(quoteUi(text))
+                    if (desc.isNotBlank()) append(" desc=").append(quoteUi(desc))
+                    if (resourceId.isNotBlank()) append(" id=").append(resourceId)
+                    if (className.isNotBlank()) {
+                        append(" class=").append(className.substringAfterLast('.'))
                     }
-                }
+                    if (packageName.isNotBlank()) append(" package=").append(packageName)
+                    if (clickable.isNotBlank()) append(" clickable=").append(clickable)
+                    if (enabled.isNotBlank()) append(" enabled=").append(enabled)
+                    if (selected == "true") append(" selected=true")
+                    if (checked == "true") append(" checked=true")
+                    if (bounds.isNotBlank()) append(" bounds=").append(bounds)
+                }.take(MAX_UI_LINE_CHARS)
 
                 if (meaningful) {
-                    val item = buildString {
-                        append("node")
-                        if (text.isNotBlank()) append(" text=").append(quoteUi(text))
-                        if (desc.isNotBlank()) append(" desc=").append(quoteUi(desc))
-                        if (resourceId.isNotBlank()) append(" id=").append(resourceId)
-                        if (className.isNotBlank()) append(" class=").append(className.substringAfterLast('.'))
-                        if (clickable.isNotBlank()) append(" clickable=").append(clickable)
-                        if (enabled.isNotBlank()) append(" enabled=").append(enabled)
-                        if (selected == "true") append(" selected=true")
-                        if (checked == "true") append(" checked=true")
-                        if (bounds.isNotBlank()) append(" bounds=").append(bounds)
-                    }
-                    lines += item.take(MAX_UI_LINE_CHARS)
+                    meaningfulNodes += 1
+                    if (lines.size < MAX_UI_NODES) lines += item
+                } else if (structuralLines.size < MAX_STRUCTURAL_UI_NODES) {
+                    structuralLines += item
                 }
             }
             event = parser.next()
@@ -672,10 +718,25 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
         return buildString {
             appendLine("UI_SNAPSHOT")
-            appendLine("format: uiautomator-summary-v1")
-            appendLine("nodes: " + lines.size)
-            lines.forEach { appendLine(it) }
-            if (event != XmlPullParser.END_DOCUMENT) {
+            appendLine("format: uiautomator-summary-v2")
+            appendLine("dump_target: " + UI_DUMP_STDOUT)
+            appendLine("dump_attempts: " + attempts)
+            appendLine("raw_nodes: " + rawNodes)
+            appendLine("meaningful_nodes: " + meaningfulNodes)
+            appendLine("clickable_nodes: " + clickableNodes)
+            appendLine(
+                "packages: " +
+                    if (packages.isEmpty()) "(none)" else packages.joinToString(",")
+            )
+
+            if (lines.isNotEmpty()) {
+                lines.forEach { appendLine(it) }
+            } else if (structuralLines.isNotEmpty()) {
+                appendLine("structural_fallback: true")
+                structuralLines.forEach { appendLine(it) }
+            }
+
+            if (meaningfulNodes > MAX_UI_NODES) {
                 appendLine("truncated: true")
             }
         }.take(MAX_UI_RESULT_CHARS)
@@ -707,8 +768,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val AUTO_CONNECT_TIMEOUT_MS = 7_000L
         private const val AUTO_CONNECT_ATTEMPTS = 2
         private const val AUTO_CONNECT_RETRY_DELAY_MS = 350L
-        private const val UI_DUMP_STDOUT = "/proc/self/fd/1"
+        private const val UI_DUMP_STDOUT = "/dev/tty"
         private const val MAX_UI_NODES = 120
+        private const val MAX_STRUCTURAL_UI_NODES = 40
         private const val MAX_UI_TEXT_CHARS = 160
         private const val MAX_UI_LINE_CHARS = 420
         private const val MAX_UI_RESULT_CHARS = 10_000
@@ -716,5 +778,7 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val TARGET_LAUNCH_POLL_DELAY_MS = 200L
         private const val TAP_SNAPSHOT_MAX_AGE_MS = 60_000L
         private const val OVERLAY_UI_SETTLE_MS = 120L
+        private const val UI_DUMP_MAX_ATTEMPTS = 2
+        private const val UI_DUMP_RETRY_DELAY_MS = 180L
     }
 }
