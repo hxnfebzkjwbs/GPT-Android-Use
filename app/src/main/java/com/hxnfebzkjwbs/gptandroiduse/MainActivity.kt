@@ -139,10 +139,7 @@ class MainActivity : AppCompatActivity() {
                 taskRunning = true
                 updateComposerEnabled()
                 updateConnectionStatus()
-                addNativeMessage(
-                    "step",
-                    "步骤：" + step
-                )
+                addNativeMessage("assistant", step)
             },
             onNativeTaskStatus = { status ->
                 runOnUiThread {
@@ -471,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                     (resources.displayMetrics.widthPixels * 0.82f).toInt()
                 setTextIsSelectable(true)
                 textSize =
-                    if (role == "system" || role == "step") 12.5f else 15.5f
+                    if (role == "system") 12.5f else 15.5f
                 setTextColor(
                     if (role == "user") Color.WHITE
                     else Color.rgb(30, 30, 30)
@@ -488,8 +485,7 @@ class MainActivity : AppCompatActivity() {
                         when (role) {
                             "user" -> Color.rgb(54, 92, 205)
                             "system" -> Color.rgb(232, 235, 240)
-                            "step" -> Color.rgb(226, 237, 255)
-                            else -> Color.WHITE
+                            else -> Color.rgb(226, 237, 255)
                         }
                     )
                 }

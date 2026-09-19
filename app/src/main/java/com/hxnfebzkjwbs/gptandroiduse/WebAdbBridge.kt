@@ -771,6 +771,8 @@ class WebAdbBridge(
           let activeTransaction = null;
           let lastNativeAssistantKey = '';
           let nativeSendPending = false;
+          let chatExperienceSelected = false;
+          let chatExperienceLastAttemptAt = 0;
 
           const internalQueue = [];
           const sentInternalIds = new Set();
@@ -949,6 +951,82 @@ class WebAdbBridge(
             if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
             const rect = el.getBoundingClientRect();
             return rect.width > 0 && rect.height > 0;
+          }
+
+          function normalizedModeLabel(value) {
+            return String(value || '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .toLowerCase();
+          }
+
+          function controlHasModeLabel(el, labels) {
+            if (!el) return false;
+            const values = [
+              el.getAttribute('aria-label'),
+              el.getAttribute('title'),
+              el.innerText,
+              el.textContent
+            ].map(normalizedModeLabel);
+            return values.some(value => labels.includes(value));
+          }
+
+          function isSelectedModeControl(el) {
+            if (!el) return false;
+            return el.getAttribute('aria-selected') === 'true' ||
+              el.getAttribute('aria-pressed') === 'true' ||
+              el.getAttribute('aria-current') === 'true' ||
+              el.getAttribute('data-state') === 'active' ||
+              el.getAttribute('data-selected') === 'true';
+          }
+
+          function selectChatExperience() {
+            if (chatExperienceSelected) return true;
+
+            const candidates = uniqueElements(Array.from(
+              document.querySelectorAll(
+                'button,[role="button"],[role="tab"],[role="menuitem"],[role="option"]'
+              )
+            )).filter(isVisible);
+
+            const chatLabels = ['chat', '聊天', '对话'];
+            const workLabels = ['work', '工作'];
+            const chatControls = candidates.filter(el =>
+              controlHasModeLabel(el, chatLabels)
+            );
+            const workControls = candidates.filter(el =>
+              controlHasModeLabel(el, workLabels)
+            );
+
+            const selectedChat = chatControls.find(isSelectedModeControl);
+            if (selectedChat) {
+              chatExperienceSelected = true;
+              return true;
+            }
+
+            if (chatControls.length && workControls.length) {
+              chatControls[0].click();
+              chatExperienceSelected = true;
+              nativeStatus('CHAT_MODE_SELECTED', 'Chat');
+              return true;
+            }
+
+            if (chatControls.length && !workControls.length) {
+              chatExperienceSelected = true;
+              return true;
+            }
+
+            if (workControls.length) {
+              const now = Date.now();
+              if (now - chatExperienceLastAttemptAt >= 800) {
+                chatExperienceLastAttemptAt = now;
+                workControls[0].click();
+                nativeStatus('CHAT_MODE_SWITCH', 'opened Work selector');
+              }
+              return false;
+            }
+
+            return true;
           }
 
           function isStopActionButton(button) {
@@ -1675,6 +1753,7 @@ class WebAdbBridge(
             if (!window.__gptAndroidUseBridgeInstalled) {
               return 'script-not-installed';
             }
+            if (!selectChatExperience()) return 'switching-to-chat';
             const editor = findComposer();
             if (!editor) return 'composer-missing';
             return 'ready';
@@ -1745,6 +1824,7 @@ class WebAdbBridge(
 
           window.__gptAndroidUseNativeSend = function(text) {
             if (!enabled) return 'disabled';
+            if (!selectChatExperience()) return 'switching-to-chat';
             if (isStreaming()) return 'streaming';
             if (nativeSendPending) return 'busy';
 
@@ -1995,6 +2075,7 @@ class WebAdbBridge(
           };
 
           const observer = new MutationObserver(() => {
+            selectChatExperience();
             if (activeTransaction) scheduleTransactionAdvance(350);
             if (internalQueue.length) scheduleInternalFlush(120);
           });
@@ -2017,6 +2098,7 @@ class WebAdbBridge(
           window.__gptAndroidUseBridgeInstalled = true;
           nativeStatus('PAGE_INJECTED', location.pathname);
           window.__gptAndroidUseSetBridgeEnabled(true);
+          setTimeout(selectChatExperience, 80);
           setTimeout(window.__gptAndroidUseSelfCheck, 250);
         })();
     """.trimIndent()
