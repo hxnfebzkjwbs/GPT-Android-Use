@@ -3,14 +3,14 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#F4F6FA"
+    android:background="#FFFFFF"
     android:orientation="vertical">
 
     <ProgressBar
         android:id="@+id/pageProgress"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
-        android:layout_height="3dp"
+        android:layout_height="2dp"
         android:max="100"
         android:visibility="gone" />
 
@@ -29,42 +29,25 @@
             android:id="@+id/nativeChatRoot"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="#F4F6FA"
+            android:background="#FFFFFF"
             android:orientation="vertical">
 
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="56dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 android:paddingStart="18dp"
-                android:paddingTop="12dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="8dp">
+                android:paddingEnd="10dp">
 
-                <LinearLayout
+                <TextView
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="GPT Android Use"
-                        android:textColor="#151820"
-                        android:textSize="20sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="原生聊天 · Web 仅用于传输与调试"
-                        android:textColor="#747B89"
-                        android:textSize="12sp" />
-
-                </LinearLayout>
+                    android:text="GPT Android Use"
+                    android:textColor="#111318"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/settingsButton"
@@ -77,78 +60,16 @@
 
             </LinearLayout>
 
-            <com.google.android.material.card.MaterialCardView
+            <TextView
+                android:id="@+id/activityStatusText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:layout_marginEnd="12dp"
-                android:layout_marginBottom="8dp"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="0dp"
-                app:strokeColor="#E2E6EE"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:paddingStart="14dp"
-                    android:paddingTop="10dp"
-                    android:paddingEnd="14dp"
-                    android:paddingBottom="10dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            android:id="@+id/adbReadyText"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="ADB · 检查中"
-                            android:textColor="#3A4250"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/bridgeReadyText"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:gravity="center"
-                            android:text="Bridge · 检查中"
-                            android:textColor="#3A4250"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/taskStatusText"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:gravity="end"
-                            android:text="任务 · 空闲"
-                            android:textColor="#3A4250"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-
-                    </LinearLayout>
-
-                    <TextView
-                        android:id="@+id/bridgeStatusText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="启动检查中…"
-                        android:textColor="#747B89"
-                        android:textIsSelectable="true"
-                        android:textSize="11sp" />
-
-                </LinearLayout>
-
-            </com.google.android.material.card.MaterialCardView>
+                android:gravity="center"
+                android:paddingTop="2dp"
+                android:paddingBottom="6dp"
+                android:text="连接中…"
+                android:textColor="#7B818C"
+                android:textSize="12sp" />
 
             <ScrollView
                 android:id="@+id/nativeMessageScroll"
@@ -156,18 +77,17 @@
                 android:layout_height="0dp"
                 android:layout_weight="1"
                 android:clipToPadding="false"
-                android:fillViewport="true"
-                android:paddingBottom="8dp">
+                android:fillViewport="true">
 
                 <LinearLayout
                     android:id="@+id/nativeMessageList"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="16dp" />
+                    android:paddingStart="12dp"
+                    android:paddingTop="10dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="18dp" />
 
             </ScrollView>
 
@@ -177,9 +97,9 @@
                 android:layout_marginStart="10dp"
                 android:layout_marginEnd="10dp"
                 android:layout_marginBottom="10dp"
-                app:cardCornerRadius="18dp"
-                app:cardElevation="1dp"
-                app:strokeColor="#E1E5EC"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="0dp"
+                app:strokeColor="#E4E7EC"
                 app:strokeWidth="1dp">
 
                 <LinearLayout
@@ -187,10 +107,10 @@
                     android:layout_height="wrap_content"
                     android:gravity="bottom"
                     android:orientation="horizontal"
-                    android:paddingStart="10dp"
-                    android:paddingTop="8dp"
-                    android:paddingEnd="8dp"
-                    android:paddingBottom="8dp">
+                    android:paddingStart="12dp"
+                    android:paddingTop="7dp"
+                    android:paddingEnd="7dp"
+                    android:paddingBottom="7dp">
 
                     <EditText
                         android:id="@+id/nativeMessageInput"
@@ -200,18 +120,18 @@
                         android:background="@android:color/transparent"
                         android:enabled="false"
                         android:gravity="top|start"
-                        android:hint="等待 ADB / Bridge 就绪…"
+                        android:hint="连接中…"
                         android:imeOptions="actionSend"
                         android:inputType="textCapSentences|textMultiLine"
                         android:maxLines="6"
                         android:minHeight="48dp"
-                        android:paddingStart="6dp"
+                        android:paddingStart="2dp"
                         android:paddingTop="10dp"
                         android:paddingEnd="6dp"
                         android:paddingBottom="10dp"
-                        android:textColor="#151820"
-                        android:textColorHint="#9AA1AD"
-                        android:textSize="15sp" />
+                        android:textColor="#111318"
+                        android:textColorHint="#A0A6B0"
+                        android:textSize="16sp" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/nativeStopButton"
@@ -219,10 +139,10 @@
                         android:layout_width="wrap_content"
                         android:layout_height="48dp"
                         android:layout_marginStart="4dp"
-                        android:enabled="false"
                         android:minWidth="0dp"
                         android:text="停止"
-                        android:textAllCaps="false" />
+                        android:textAllCaps="false"
+                        android:visibility="gone" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/nativeSendButton"
