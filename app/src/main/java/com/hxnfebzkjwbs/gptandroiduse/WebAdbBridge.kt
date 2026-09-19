@@ -442,17 +442,20 @@ class WebAdbBridge(
           const PROTOCOL_TAG = '[ANDROID_ADB_BRIDGE]';
           const BRIDGE_HINT =
             '\n\n' + PROTOCOL_TAG + '\n' +
-            'If this request requires Android device access, reply with exactly one fenced code block. ' +
-            'The first line inside the block must be ADB_EXEC. Put exactly ONE adb shell command on the next line, ' +
+            'If this request requires Android device access, first write ONE short sentence in Chinese explaining what this next step does and what evidence from the latest result justifies it. ' +
+            'Then output exactly one fenced code block. The first line inside the block must be ADB_EXEC. Put exactly ONE adb shell command on the next line, ' +
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
+            'Never tap guessed coordinates. An input tap must be justified by a visible clickable=true node and its bounds from the latest UI_SNAPSHOT. ' +
+            'If the desired control is not visible, inspect the UI again or use a clearly visible navigation control; do not probe random locations. ' +
+            'If the desired control is still not found after two inspection/navigation attempts, stop device actions and explain that the control was not found instead of continuing to tap. ' +
             'For tasks that control another app, the FIRST device command must launch the target app with am start or monkey -p. ' +
             'Do not inspect or interact with UI before the target app is launched. ' +
             'For UI automation, use exactly "uiautomator dump" when you need to inspect the target screen. ' +
             'Do not cat UI XML files, do not choose your own dump path, and do not use shell redirection such as > /dev/null; ' +
             'the native bridge captures the hierarchy in memory and returns UI_SNAPSHOT itself. ' +
             'UI-changing commands may also return a UI_SNAPSHOT automatically; use its text, resource ids, clickable flags and bounds. ' +
-            'Do not add prose outside the block. If no device action is needed, answer normally.';
+            'Keep the explanation to one short sentence. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
           const PHASE_EXECUTING = 'EXECUTING';
@@ -1120,9 +1123,11 @@ class WebAdbBridge(
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
               'The device command has finished. Inspect this result before deciding the next action. ' +
-              'If the original request still needs device work, issue exactly ONE next ADB_EXEC command. ' +
+              'If the original request still needs device work, first explain the next step in one short Chinese sentence, then issue exactly ONE next ADB_EXEC command. ' +
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
-              'Do not batch multiple commands. For screen inspection, use only "uiautomator dump"; never cat dump files or add shell redirection; the hierarchy is captured in memory. ' +
+              'Do not batch multiple commands. Never tap guessed coordinates; input tap must correspond to a clickable=true node in the latest UI_SNAPSHOT. ' +
+              'If the target control cannot be identified after two inspection/navigation attempts, stop rather than trying random taps. ' +
+              'For screen inspection, use only "uiautomator dump"; never cat dump files or add shell redirection; the hierarchy is captured in memory. ' +
               'Otherwise answer normally.';
 
             enqueueInternalMessage(
@@ -1163,8 +1168,8 @@ class WebAdbBridge(
             }
 
             const prompt =
-              '请通过 Android ADB 读取当前手机电池状态。不要解释，不要回复 understood。' +
-              '请严格只返回一个代码块，第一行必须是 ADB_EXEC，下一行使用 dumpsys battery。' +
+              '请通过 Android ADB 读取当前手机电池状态。先用一句话说明这一步是读取电池状态。' +
+              '然后返回一个代码块，第一行必须是 ADB_EXEC，下一行使用 dumpsys battery。' +
               BRIDGE_HINT;
 
             oneTapPending = true;

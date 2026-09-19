@@ -44,6 +44,19 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     @Volatile private var lastProbeSuccessAt = 0L
     @Volatile private var targetPackage: String? = null
     @Volatile private var lastForegroundPackage = "unknown"
+    @Volatile private var lastUiObservedAt = 0L
+    @Volatile private var lastClickableTargets: List<UiTapTarget> = emptyList()
+
+    private data class UiTapTarget(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val label: String
+    ) {
+        fun contains(x: Int, y: Int): Boolean =
+            x in left..right && y in top..bottom
+    }
 
     private val shellLock = Any()
     private var shellStream: AdbStream? = null
@@ -145,6 +158,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
 
                 isTargetInteractionCommand(normalized) -> {
                     requireTargetForeground()
+                    if (normalized.startsWith("input tap ", ignoreCase = true)) {
+                        requireTapBackedByUiSnapshot(normalized)
+                    }
                     runShellUnchecked(normalized)
                 }
 
@@ -380,6 +396,41 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             lower.startsWith("input keyevent ")
     }
 
+    private fun requireTapBackedByUiSnapshot(command: String) {
+        val match = Regex(
+            "^input\\s+tap\\s+(-?\\d+)\\s+(-?\\d+)(?:\\s|$)",
+            RegexOption.IGNORE_CASE
+        ).find(command) ?: error(
+            "Tap rejected: could not parse tap coordinates. Inspect the UI first."
+        )
+
+        val x = match.groupValues[1].toIntOrNull()
+            ?: error("Tap rejected: invalid X coordinate")
+        val y = match.groupValues[2].toIntOrNull()
+            ?: error("Tap rejected: invalid Y coordinate")
+
+        val age = System.currentTimeMillis() - lastUiObservedAt
+        if (lastUiObservedAt <= 0L || age > TAP_SNAPSHOT_MAX_AGE_MS) {
+            throw IllegalStateException(
+                "Tap rejected: no recent UI snapshot is available. " +
+                    "Run uiautomator dump first, then choose a visible clickable node."
+            )
+        }
+
+        val target = lastClickableTargets.firstOrNull { it.contains(x, y) }
+            ?: throw IllegalStateException(
+                "Tap rejected: (" + x + "," + y + ") is not inside any " +
+                    "clickable=true node from the latest UI_SNAPSHOT. " +
+                    "Do not guess coordinates; inspect the UI again."
+            )
+
+        lastStage = "tap_validated"
+        AppLog.add(
+            "ADB_GUARD",
+            "tap=(" + x + "," + y + ") matched " + target.label
+        )
+    }
+
     private fun isTargetLaunchCommand(command: String): Boolean {
         val lower = command.lowercase()
         return lower.startsWith("am start ") || lower.startsWith("monkey ")
@@ -548,6 +599,7 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         parser.setInput(xml.reader())
 
         val lines = ArrayList<String>()
+        val clickableTargets = ArrayList<UiTapTarget>()
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT && lines.size < MAX_UI_NODES) {
             if (event == XmlPullParser.START_TAG && parser.name == "node") {
@@ -570,6 +622,20 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                     resourceId.isNotBlank() ||
                     clickable == "true"
 
+                if (clickable == "true" && enabled != "false" && bounds.isNotBlank()) {
+                    parseBounds(bounds)?.let { parsed ->
+                        val label = when {
+                            text.isNotBlank() -> "text=" + text.take(80)
+                            desc.isNotBlank() -> "desc=" + desc.take(80)
+                            resourceId.isNotBlank() -> "id=" + resourceId.take(120)
+                            else -> "bounds=" + bounds
+                        }
+                        clickableTargets += UiTapTarget(
+                            parsed[0], parsed[1], parsed[2], parsed[3], label
+                        )
+                    }
+                }
+
                 if (meaningful) {
                     val item = buildString {
                         append("node")
@@ -589,6 +655,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             event = parser.next()
         }
 
+        lastClickableTargets = clickableTargets.toList()
+        lastUiObservedAt = System.currentTimeMillis()
+
         return buildString {
             appendLine("UI_SNAPSHOT")
             appendLine("format: uiautomator-summary-v1")
@@ -598,6 +667,18 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                 appendLine("truncated: true")
             }
         }.take(MAX_UI_RESULT_CHARS)
+    }
+
+    private fun parseBounds(value: String): IntArray? {
+        val match = Regex(
+            "^\\[(\\d+),(\\d+)]\\[(\\d+),(\\d+)]$"
+        ).matchEntire(value) ?: return null
+        return intArrayOf(
+            match.groupValues[1].toInt(),
+            match.groupValues[2].toInt(),
+            match.groupValues[3].toInt(),
+            match.groupValues[4].toInt()
+        )
     }
 
     private fun quoteUi(value: String): String =
@@ -621,5 +702,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val MAX_UI_RESULT_CHARS = 10_000
         private const val TARGET_LAUNCH_POLL_ATTEMPTS = 6
         private const val TARGET_LAUNCH_POLL_DELAY_MS = 200L
+        private const val TAP_SNAPSHOT_MAX_AGE_MS = 60_000L
     }
 }
