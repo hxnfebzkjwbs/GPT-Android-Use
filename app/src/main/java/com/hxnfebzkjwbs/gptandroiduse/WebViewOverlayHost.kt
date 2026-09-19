@@ -5,10 +5,16 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
@@ -16,6 +22,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 object WebViewOverlayHost {
     private val lock = Any()
@@ -26,6 +34,10 @@ object WebViewOverlayHost {
     private var captureHidden = false
     private var backgroundWidth = 0
     private var backgroundHeight = 0
+    private var floatingButton: TextView? = null
+    private var floatingStatus = ""
+    private var overlayX = 0
+    private var overlayY = 0
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun moveToBackground(context: Context, webView: WebView): Boolean =
@@ -56,6 +68,7 @@ object WebViewOverlayHost {
                         screenWidth,
                         screenHeight
                     )
+                    floatingButton?.let { applyFloatingStatus(it) }
                     webView.resumeTimers()
                     webView.onResume()
                     return@synchronized true
@@ -81,37 +94,18 @@ object WebViewOverlayHost {
                 root.addView(webView)
 
                 val bubble = TextView(appContext).apply {
-                    text = "GPT"
                     setTextColor(Color.WHITE)
-                    textSize = 11f
                     gravity = Gravity.CENTER
                     isClickable = true
                     isFocusable = false
+                    includeFontPadding = false
+                    setLineSpacing(0f, 0.92f)
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
                         setColor(Color.argb(230, 38, 38, 38))
                     }
-                    setOnClickListener {
-                        AppLog.add("MICRO_OVERLAY", "floating button clicked")
-                        runCatching {
-                            appContext.startActivity(
-                                Intent(appContext, MainActivity::class.java).apply {
-                                    addFlags(
-                                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                    )
-                                }
-                            )
-                        }.onFailure {
-                            AppLog.add(
-                                "MICRO_OVERLAY",
-                                "foreground launch failed: " +
-                                    (it.message ?: it.javaClass.simpleName)
-                            )
-                        }
-                    }
                 }
+                applyFloatingStatus(bubble)
 
                 root.addView(
                     bubble,
@@ -130,7 +124,17 @@ object WebViewOverlayHost {
                     windowManager = wm
                     hostedWebView = webView
                     overlayRoot = root
+                    floatingButton = bubble
                     overlayAttached = true
+                    installFloatingButtonTouch(
+                        appContext,
+                        wm,
+                        root,
+                        bubble,
+                        screenWidth,
+                        screenHeight,
+                        hostSide
+                    )
                     captureHidden = false
                     backgroundWidth = screenWidth
                     backgroundHeight = screenHeight
@@ -150,6 +154,7 @@ object WebViewOverlayHost {
                 }.getOrElse {
                     root.removeView(webView)
                     overlayRoot = null
+                    floatingButton = null
                     hostedWebView = webView
                     overlayAttached = false
                     AppLog.add(
@@ -161,6 +166,174 @@ object WebViewOverlayHost {
                 }
             }
         }
+
+    fun updateTaskStatus(status: String) {
+        synchronized(lock) {
+            floatingStatus = status
+        }
+        mainHandler.post {
+            synchronized(lock) {
+                floatingButton?.let { applyFloatingStatus(it) }
+            }
+        }
+    }
+
+    private fun applyFloatingStatus(button: TextView) {
+        val shortStatus = when (floatingStatus) {
+            "连接" -> "连接"
+            "进行" -> "进行"
+            "完成" -> "完成"
+            "失败" -> "失败"
+            else -> ""
+        }
+        button.text =
+            if (shortStatus.isBlank()) "GPT"
+            else "GPT\n" + shortStatus
+        button.textSize = if (shortStatus.isBlank()) 11f else 9f
+        button.contentDescription =
+            if (shortStatus.isBlank()) "GPT Android Use"
+            else "GPT Android Use，任务状态：" + shortStatus
+    }
+
+    private fun installFloatingButtonTouch(
+        context: Context,
+        wm: WindowManager,
+        root: FrameLayout,
+        bubble: TextView,
+        screenWidth: Int,
+        screenHeight: Int,
+        hostSide: Int
+    ) {
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var pointerDown = false
+        var cancelledBeforeLongPress = false
+        var dragUnlocked = false
+
+        val longPressRunnable = Runnable {
+            if (!pointerDown || cancelledBeforeLongPress) return@Runnable
+            dragUnlocked = true
+            vibrateForDrag(context)
+            AppLog.add("MICRO_OVERLAY", "drag unlocked after long press")
+        }
+
+        bubble.setOnTouchListener { _, event ->
+            val params =
+                root.layoutParams as? WindowManager.LayoutParams
+                    ?: return@setOnTouchListener false
+
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    startX = params.x
+                    startY = params.y
+                    pointerDown = true
+                    cancelledBeforeLongPress = false
+                    dragUnlocked = false
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    mainHandler.postDelayed(
+                        longPressRunnable,
+                        FLOATING_DRAG_LONG_PRESS_MS
+                    )
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    val distance = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+                    if (!dragUnlocked && distance > touchSlop) {
+                        cancelledBeforeLongPress = true
+                        mainHandler.removeCallbacks(longPressRunnable)
+                    }
+
+                    if (dragUnlocked) {
+                        val maxX = (screenWidth - hostSide).coerceAtLeast(0)
+                        val maxY = (screenHeight - hostSide).coerceAtLeast(0)
+                        params.x =
+                            (startX - dx.roundToInt()).coerceIn(0, maxX)
+                        params.y =
+                            (startY - dy.roundToInt()).coerceIn(0, maxY)
+                        overlayX = params.x
+                        overlayY = params.y
+                        runCatching {
+                            wm.updateViewLayout(root, params)
+                        }
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    pointerDown = false
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    val distance = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+                    if (!dragUnlocked &&
+                        !cancelledBeforeLongPress &&
+                        distance <= touchSlop
+                    ) {
+                        openMainActivity(context)
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    pointerDown = false
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    true
+                }
+
+                else -> true
+            }
+        }
+    }
+
+    private fun vibrateForDrag(context: Context) {
+        val vibrator: Vibrator =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                context.getSystemService(VibratorManager::class.java)
+                    .defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Vibrator::class.java)
+            }
+
+        if (!vibrator.hasVibrator()) return
+        vibrator.vibrate(
+            VibrationEffect.createOneShot(
+                FLOATING_DRAG_VIBRATION_MS,
+                VibrationEffect.DEFAULT_AMPLITUDE
+            )
+        )
+    }
+
+    private fun openMainActivity(context: Context) {
+        AppLog.add("MICRO_OVERLAY", "floating button clicked")
+        runCatching {
+            context.startActivity(
+                Intent(context, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                }
+            )
+        }.onFailure {
+            AppLog.add(
+                "MICRO_OVERLAY",
+                "foreground launch failed: " +
+                    (it.message ?: it.javaClass.simpleName)
+            )
+        }
+    }
 
     private fun resizeBackgroundWebView(
         webView: WebView,
@@ -284,6 +457,7 @@ object WebViewOverlayHost {
             overlayAttached = false
             captureHidden = false
             overlayRoot = null
+            floatingButton = null
             backgroundWidth = 0
             backgroundHeight = 0
             hostedWebView = webView
@@ -336,6 +510,7 @@ object WebViewOverlayHost {
             overlayAttached = false
             captureHidden = false
             overlayRoot = null
+            floatingButton = null
             backgroundWidth = 0
             backgroundHeight = 0
         }
@@ -354,8 +529,8 @@ object WebViewOverlayHost {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.END
-            x = 0
-            y = 0
+            x = overlayX
+            y = overlayY
             alpha = 1f
         }
 
@@ -382,4 +557,6 @@ object WebViewOverlayHost {
     }
 
     private const val FLOATING_BUTTON_DP = 48f
+    private const val FLOATING_DRAG_LONG_PRESS_MS = 2_000L
+    private const val FLOATING_DRAG_VIBRATION_MS = 45L
 }

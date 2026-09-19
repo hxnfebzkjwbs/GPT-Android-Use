@@ -41,13 +41,41 @@
                 android:paddingEnd="10dp">
 
                 <TextView
-                    android:layout_width="0dp"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
                     android:text="GPT Android Use"
                     android:textColor="#111318"
                     android:textSize="18sp"
                     android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/connectionStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ProgressBar
+                        style="?android:attr/progressBarStyleSmall"
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:indeterminate="true" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="5dp"
+                        android:text="连接中"
+                        android:textColor="#7B818C"
+                        android:textSize="12sp" />
+
+                </LinearLayout>
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/settingsButton"
@@ -59,17 +87,6 @@
                     android:textAllCaps="false" />
 
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/activityStatusText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center"
-                android:paddingTop="2dp"
-                android:paddingBottom="6dp"
-                android:text="连接中…"
-                android:textColor="#7B818C"
-                android:textSize="12sp" />
 
             <ScrollView
                 android:id="@+id/nativeMessageScroll"

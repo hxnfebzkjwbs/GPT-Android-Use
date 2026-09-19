@@ -50,6 +50,10 @@ class MainActivity : AppCompatActivity() {
     private var bridgeHydrationStartedAt = 0L
     private var lastBridgeHealthDetail = ""
     private var lastBridgeHealthLogAt = 0L
+    private var activeProcessHeader: TextView? = null
+    private var activeProcessBody: LinearLayout? = null
+    private var activeProcessStepCount = 0
+    private var lastTaskStatus: String? = null
     private val readinessHandler = Handler(Looper.getMainLooper())
     private val bridgeHealthPollRunnable = Runnable {
         if (isFinishing || isDestroyed) return@Runnable
@@ -133,13 +137,16 @@ class MainActivity : AppCompatActivity() {
                 }
             },
             onNativeAssistantMessage = { text ->
-                addNativeMessage("assistant", text)
+                runOnUiThread {
+                    collapseNativeProcess()
+                    addNativeMessage("assistant", text)
+                }
             },
             onNativeStep = { step ->
                 taskRunning = true
                 updateComposerEnabled()
                 updateConnectionStatus()
-                addNativeMessage("assistant", step)
+                addNativeStep(step)
             },
             onNativeTaskStatus = { status ->
                 runOnUiThread {
@@ -260,6 +267,7 @@ class MainActivity : AppCompatActivity() {
         updateComposerEnabled()
         updateConnectionStatus("进行中")
         addNativeMessage("user", text)
+        beginNativeProcess()
 
         pageAdbBridge.installForCurrentPage()
         pageAdbBridge.sendNativeMessage(text) { result ->
@@ -316,17 +324,26 @@ class MainActivity : AppCompatActivity() {
     private fun updateConnectionStatus(
         taskStatus: String? = null
     ) {
-        val text = when {
-            taskStatus == "失败" -> "失败"
-            taskStatus == "成功" -> "成功"
-            taskRunning || taskStatus == "进行中" -> "进行中"
-            !adbReady || !bridgeReady -> "连接中…"
-            else -> ""
+        if (taskStatus != null) {
+            lastTaskStatus = taskStatus
         }
 
-        binding.activityStatusText.text = text
-        binding.activityStatusText.visibility =
-            if (text.isBlank()) View.GONE else View.VISIBLE
+        val connecting = !adbReady || !bridgeReady
+        binding.connectionStatus.visibility =
+            if (connecting) View.VISIBLE else View.GONE
+
+        if (taskStatus == "成功" || taskStatus == "失败") {
+            collapseNativeProcess()
+        }
+
+        val overlayStatus = when {
+            connecting -> "连接"
+            taskRunning || lastTaskStatus == "进行中" -> "进行"
+            lastTaskStatus == "成功" -> "完成"
+            lastTaskStatus == "失败" -> "失败"
+            else -> ""
+        }
+        WebViewOverlayHost.updateTaskStatus(overlayStatus)
     }
 
     private fun checkAdbReadiness() {
@@ -455,6 +472,129 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         )
+    }
+
+    private fun beginNativeProcess() {
+        activeProcessHeader = null
+        activeProcessBody = null
+        activeProcessStepCount = 0
+    }
+
+    private fun ensureNativeProcessBody(): LinearLayout {
+        activeProcessBody?.let { return it }
+
+        val density = resources.displayMetrics.density
+        val group = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (6 * density).toInt(),
+                (2 * density).toInt(),
+                (6 * density).toInt(),
+                (2 * density).toInt()
+            )
+        }
+
+        val header = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(105, 110, 120))
+            setPadding(
+                (4 * density).toInt(),
+                (5 * density).toInt(),
+                (4 * density).toInt(),
+                (5 * density).toInt()
+            )
+            visibility = View.GONE
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        group.addView(
+            header,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        group.addView(
+            body,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        binding.nativeMessageList.addView(
+            group,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                val margin = (6 * density).toInt()
+                setMargins(margin, margin, (36 * density).toInt(), margin)
+            }
+        )
+
+        activeProcessHeader = header
+        activeProcessBody = body
+        return body
+    }
+
+    private fun addNativeStep(step: String) {
+        if (step.isBlank()) return
+        runOnUiThread {
+            val density = resources.displayMetrics.density
+            val body = ensureNativeProcessBody()
+            val line = TextView(this).apply {
+                text = step
+                textSize = 12.5f
+                setTextColor(Color.rgb(105, 110, 120))
+                setTextIsSelectable(true)
+                setPadding(
+                    (4 * density).toInt(),
+                    (3 * density).toInt(),
+                    (4 * density).toInt(),
+                    (3 * density).toInt()
+                )
+            }
+            body.addView(
+                line,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            activeProcessStepCount += 1
+            binding.nativeMessageScroll.post {
+                binding.nativeMessageScroll.fullScroll(View.FOCUS_DOWN)
+            }
+        }
+    }
+
+    private fun collapseNativeProcess() {
+        val header = activeProcessHeader ?: return
+        val body = activeProcessBody ?: return
+        if (activeProcessStepCount <= 0) return
+
+        body.visibility = View.GONE
+        header.visibility = View.VISIBLE
+
+        fun refreshHeader() {
+            header.text =
+                if (body.visibility == View.VISIBLE) {
+                    "过程（$activeProcessStepCount）⌄"
+                } else {
+                    "过程（$activeProcessStepCount）›"
+                }
+        }
+
+        refreshHeader()
+        header.setOnClickListener {
+            body.visibility =
+                if (body.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            refreshHeader()
+        }
     }
 
     private fun addNativeMessage(role: String, text: String) {
