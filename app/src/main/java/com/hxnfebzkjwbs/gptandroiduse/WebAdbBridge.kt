@@ -265,6 +265,7 @@ class WebAdbBridge(
         }
         if (!inFlight.add(requestId)) return
         postStatus("Bridge: Native received ADB_EXEC")
+        val executionGeneration = stopGeneration.get()
 
         executor.execute {
             var failurePhase = "parse"
@@ -287,7 +288,11 @@ class WebAdbBridge(
                     onNativeStep(stepDescription)
                 }
 
-                val executionGeneration = stopGeneration.get()
+                if (stopGeneration.get() != executionGeneration) {
+                    postStatus("Bridge: stopped before parsing command")
+                    return@execute
+                }
+
                 val commands = parseCommands(payload)
                 if (commands.isEmpty()) {
                     postResult(requestId, false, "ADB_EXEC block contains no command after STEP")
@@ -647,6 +652,7 @@ class WebAdbBridge(
             'Do not cat UI XML files, do not choose your own dump path, and do not use shell redirection such as > /dev/null; ' +
             'the native bridge captures the hierarchy in memory and returns UI_SNAPSHOT itself. ' +
             'UI-changing commands may return UI_SNAPSHOT and OCR automatically. Escalate to screencap -p only when OCR is insufficient for a visual-only target. ' +
+            'For Chinese or other non-ASCII text, still issue input text <text>. The native bridge will first try Accessibility ACTION_SET_TEXT on the focused editable node, then fall back to ClipboardManager plus ADB KEYCODE_PASTE. Do not invent a separate clipboard shell command. ' +
             'Keep STEP to one short sentence. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
