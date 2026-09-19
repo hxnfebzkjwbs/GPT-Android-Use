@@ -33,4 +33,33 @@ object OverlaySettings {
             .putInt(KEY_OPACITY_PERCENT, percent.coerceIn(1, 100))
             .apply()
     }
+
+    fun getIconStyle(context: Context): String =
+        normalizeIconStyle(
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_ICON_STYLE, STYLE_RING)
+                .orEmpty()
+        )
+
+    fun setIconStyle(context: Context, style: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_ICON_STYLE, normalizeIconStyle(style))
+            .apply()
+    }
+
+    fun normalizeIconStyle(style: String): String =
+        when (style) {
+            STYLE_RING,
+            STYLE_ORBIT,
+            STYLE_ROBOT,
+            STYLE_MINIMAL -> style
+            else -> STYLE_RING
+        }
+
+    const val STYLE_RING = "ring"
+    const val STYLE_ORBIT = "orbit"
+    const val STYLE_ROBOT = "robot"
+    const val STYLE_MINIMAL = "minimal"
+    private const val KEY_ICON_STYLE = "icon_style"
 }

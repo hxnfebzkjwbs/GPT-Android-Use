@@ -2,6 +2,7 @@ package com.hxnfebzkjwbs.gptandroiduse
 
 import android.content.Intent
 import android.net.Uri
+import android.graphics.Color
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -80,7 +81,68 @@ class SettingsActivity : AppCompatActivity() {
         binding.logsButton.setOnClickListener {
             startActivity(Intent(this, LogActivity::class.java))
         }
+
+        configureFloatingIconStyles()
     }
+
+    private fun configureFloatingIconStyles() {
+        binding.previewRing.setIconStyle(OverlaySettings.STYLE_RING)
+        binding.previewOrbit.setIconStyle(OverlaySettings.STYLE_ORBIT)
+        binding.previewRobot.setIconStyle(OverlaySettings.STYLE_ROBOT)
+        binding.previewMinimal.setIconStyle(OverlaySettings.STYLE_MINIMAL)
+
+        val choices = listOf(
+            Triple(
+                binding.styleRingCard,
+                OverlaySettings.STYLE_RING,
+                binding.previewRing
+            ),
+            Triple(
+                binding.styleOrbitCard,
+                OverlaySettings.STYLE_ORBIT,
+                binding.previewOrbit
+            ),
+            Triple(
+                binding.styleRobotCard,
+                OverlaySettings.STYLE_ROBOT,
+                binding.previewRobot
+            ),
+            Triple(
+                binding.styleMinimalCard,
+                OverlaySettings.STYLE_MINIMAL,
+                binding.previewMinimal
+            )
+        )
+
+        fun renderSelection(selected: String) {
+            choices.forEach { (card, style, _) ->
+                val active = style == selected
+                card.strokeWidth = if (active) dp(2) else dp(1)
+                card.strokeColor =
+                    if (active) Color.rgb(65, 93, 190)
+                    else Color.rgb(226, 229, 234)
+                card.setCardBackgroundColor(
+                    if (active) Color.rgb(245, 247, 255)
+                    else Color.WHITE
+                )
+            }
+        }
+
+        var selected = OverlaySettings.getIconStyle(this)
+        renderSelection(selected)
+
+        choices.forEach { (card, style, _) ->
+            card.setOnClickListener {
+                selected = style
+                OverlaySettings.setIconStyle(this, style)
+                renderSelection(selected)
+                WebViewOverlayHost.refreshFloatingStyle(this)
+            }
+        }
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
 
     override fun onResume() {
         super.onResume()

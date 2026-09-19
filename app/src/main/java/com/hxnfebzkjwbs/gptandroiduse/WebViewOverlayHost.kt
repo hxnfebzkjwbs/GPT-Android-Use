@@ -2,9 +2,7 @@ package com.hxnfebzkjwbs.gptandroiduse
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -19,7 +17,6 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
-import android.widget.TextView
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
@@ -33,7 +30,7 @@ object WebViewOverlayHost {
     private var captureHidden = false
     private var backgroundWidth = 0
     private var backgroundHeight = 0
-    private var floatingButton: TextView? = null
+    private var floatingButton: FloatingStatusView? = null
     private var floatingStatus = ""
     private var overlayX = 0
     private var overlayY = 0
@@ -86,25 +83,19 @@ object WebViewOverlayHost {
                 webView.importantForAccessibility =
                     WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 webView.visibility = WebView.VISIBLE
-                webView.layoutParams = FrameLayout.LayoutParams(
-                    screenWidth,
-                    screenHeight
-                )
+                webView.layoutParams =
+                    backgroundWebViewLayoutParams(
+                        screenWidth,
+                        screenHeight
+                    )
                 root.addView(webView)
 
-                val bubble = TextView(appContext).apply {
-                    setTextColor(Color.WHITE)
-                    gravity = Gravity.CENTER
+                val bubble = FloatingStatusView(appContext).apply {
                     isClickable = true
                     isFocusable = false
-                    includeFontPadding = false
-                    setLineSpacing(0f, 0.92f)
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.argb(230, 38, 38, 38))
-                    }
+                    setIconStyle(OverlaySettings.getIconStyle(appContext))
+                    setTaskStatus(floatingStatus)
                 }
-                applyFloatingStatus(bubble)
 
                 root.addView(
                     bubble,
@@ -177,21 +168,17 @@ object WebViewOverlayHost {
         }
     }
 
-    private fun applyFloatingStatus(button: TextView) {
-        val shortStatus = when (floatingStatus) {
-            "连接" -> "连接中"
-            "进行" -> "进行中"
-            "完成" -> "已完成"
-            "失败" -> "失败"
-            else -> ""
+    private fun applyFloatingStatus(button: FloatingStatusView) {
+        button.setTaskStatus(floatingStatus)
+    }
+
+    fun refreshFloatingStyle(context: Context) {
+        val style = OverlaySettings.getIconStyle(context.applicationContext)
+        mainHandler.post {
+            synchronized(lock) {
+                floatingButton?.setIconStyle(style)
+            }
         }
-        button.text =
-            if (shortStatus.isBlank()) "GPT"
-            else "GPT\n" + shortStatus
-        button.textSize = if (shortStatus.isBlank()) 11f else 8.5f
-        button.contentDescription =
-            if (shortStatus.isBlank()) "GPT Android Use"
-            else "GPT Android Use，任务状态：" + shortStatus
     }
 
     private fun installFloatingButtonTouch(
@@ -376,14 +363,30 @@ object WebViewOverlayHost {
             return
         }
 
-        webView.layoutParams = FrameLayout.LayoutParams(
-            width.coerceAtLeast(1),
-            height.coerceAtLeast(1)
-        )
+        webView.layoutParams =
+            backgroundWebViewLayoutParams(
+                width.coerceAtLeast(1),
+                height.coerceAtLeast(1)
+            )
         backgroundWidth = width.coerceAtLeast(1)
         backgroundHeight = height.coerceAtLeast(1)
         webView.requestLayout()
     }
+
+    private fun backgroundWebViewLayoutParams(
+        width: Int,
+        height: Int
+    ): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(
+            width.coerceAtLeast(1),
+            height.coerceAtLeast(1)
+        ).apply {
+            // Keep the full-size WebView attached and running, but move its
+            // entire rendered surface to the left of the tiny overlay host.
+            // The parent clips children, so no ChatGPT pixels are visible
+            // behind the floating control.
+            leftMargin = -width.coerceAtLeast(1) - 1
+        }
 
     fun setHiddenForScreenshot(
         context: Context,
