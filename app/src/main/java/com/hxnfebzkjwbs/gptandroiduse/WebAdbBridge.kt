@@ -478,14 +478,15 @@ class WebAdbBridge(
             'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
             'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
             'Never tap guessed coordinates. An input tap must be justified either by a visible clickable=true node in UI_SNAPSHOT or by a matching text region and bounds in VISUAL_SNAPSHOT. ' +
-            'If the desired control is not visible, inspect the UI again or use a clearly visible navigation control; do not probe random locations. ' +
-            'If the desired control is still not found after two inspection/navigation attempts, stop device actions and explain that the control was not found instead of continuing to tap. ' +
+            'If the desired control is not visible, use a semantically relevant and validated navigation control from the latest snapshot to continue toward the goal; do not probe random locations. ' +
+            'An empty UIAutomator tree followed by OCR fallback is ONE observation attempt, not two failed attempts. ' +
+            'Do not stop merely because the exact target control is not yet visible. Stop only after TWO distinct state-changing navigation actions, each followed by a fresh snapshot, fail to produce progress AND no new validated navigation candidate remains. ' +
             'For tasks that control another app, the FIRST device command must launch the target app with am start or monkey -p. ' +
             'Do not inspect or interact with UI before the target app is launched. ' +
             'For UI automation, use exactly "uiautomator dump" when you need to inspect the target screen. ' +
             'Do not cat UI XML files, do not choose your own dump path, and do not use shell redirection such as > /dev/null; ' +
             'the native bridge captures the hierarchy in memory and returns UI_SNAPSHOT itself. ' +
-            'UI-changing commands may also return a UI_SNAPSHOT automatically; use its text, resource ids, clickable flags and bounds. ' +
+            'UI-changing commands may also return UI_SNAPSHOT and VISUAL_SNAPSHOT automatically; use their text, resource ids, OCR regions and bounds to choose the next validated step. ' +
             'Keep STEP to one short sentence. If no device action is needed, answer normally.';
 
           const PHASE_WAITING_ASSISTANT = 'WAITING_ASSISTANT';
@@ -1157,7 +1158,8 @@ class WebAdbBridge(
               'If the original request still needs device work, the next code block MUST be: ADB_EXEC, then STEP: <one short Chinese sentence>, then exactly ONE command. ' +
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
               'Do not batch multiple commands. Never tap guessed coordinates; input tap must correspond to a clickable=true UI node or an OCR text region in the latest snapshot. ' +
-              'If the target control cannot be identified after two inspection/navigation attempts, stop rather than trying random taps. ' +
+              'Do not count repeated screen inspections as failed navigation. If the exact target is absent but validated navigation candidates remain, continue toward the goal. ' +
+              'Stop only after two distinct state-changing navigation actions fail to make progress and no new validated navigation candidate remains. ' +
               'For screen inspection, use only "uiautomator dump"; never cat dump files or add shell redirection; the hierarchy is captured in memory. ' +
               'Otherwise answer normally.';
 

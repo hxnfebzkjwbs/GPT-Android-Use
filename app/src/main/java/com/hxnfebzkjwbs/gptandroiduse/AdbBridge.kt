@@ -758,7 +758,21 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     private fun captureOcrSnapshot(): String {
         lastStage = "ui_ocr_capture"
 
-        val rawBase64 = runShellUnchecked("screencap -p | base64")
+        val overlayHidden = WebViewOverlayHost.setHiddenForScreenshot(
+            context,
+            true
+        )
+        if (overlayHidden) {
+            Thread.sleep(SCREENSHOT_OVERLAY_SETTLE_MS)
+        }
+
+        val rawBase64 = try {
+            runShellUnchecked("screencap -p | base64")
+        } finally {
+            if (overlayHidden) {
+                WebViewOverlayHost.setHiddenForScreenshot(context, false)
+            }
+        }
         val encoded = rawBase64
             .lineSequence()
             .map { it.trim() }
@@ -908,5 +922,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val UI_DUMP_RETRY_DELAY_MS = 180L
         private const val OCR_TIMEOUT_SECONDS = 8L
         private const val MAX_OCR_REGIONS = 120
+        private const val SCREENSHOT_OVERLAY_SETTLE_MS = 80L
     }
 }

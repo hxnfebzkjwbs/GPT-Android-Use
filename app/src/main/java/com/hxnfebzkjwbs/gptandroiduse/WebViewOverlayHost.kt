@@ -2,9 +2,9 @@ package com.hxnfebzkjwbs.gptandroiduse
 
 import android.content.Context
 import android.graphics.PixelFormat
-import android.provider.Settings
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -18,7 +18,7 @@ object WebViewOverlayHost {
     private var windowManager: WindowManager? = null
     private var hostedWebView: WebView? = null
     private var overlayAttached = false
-    private var suspendedForUiInspection = false
+    private var captureHidden = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun moveToOverlay(context: Context, webView: WebView): Boolean {
@@ -29,98 +29,91 @@ object WebViewOverlayHost {
                 return true
             }
 
-            val parent = webView.parent as? ViewGroup
-            parent?.removeView(webView)
+            (webView.parent as? ViewGroup)?.removeView(webView)
 
             val wm = context.applicationContext
                 .getSystemService(WindowManager::class.java)
-            val params = createLayoutParams(context)
 
             return runCatching {
                 if (overlayAttached && hostedWebView != null) {
                     runCatching { windowManager?.removeViewImmediate(hostedWebView) }
                 }
+
                 webView.importantForAccessibility =
                     WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                wm.addView(webView, params)
+                wm.addView(webView, createLayoutParams(context))
+
                 windowManager = wm
                 hostedWebView = webView
                 overlayAttached = true
-                suspendedForUiInspection = false
+                captureHidden = false
+
                 webView.visibility = WebView.VISIBLE
                 webView.resumeTimers()
                 webView.post {
                     webView.requestLayout()
                     webView.invalidate()
                 }
+
+                AppLog.add("OVERLAY", "attached")
                 true
             }.getOrElse {
                 overlayAttached = false
-                suspendedForUiInspection = false
+                captureHidden = false
                 hostedWebView = null
+                AppLog.add(
+                    "OVERLAY",
+                    "attach failed: " + (it.message ?: it.javaClass.simpleName)
+                )
                 false
             }
         }
     }
 
-    fun suspendForUiInspection(timeoutMs: Long = 1_000L): Boolean =
-        runOnMainBlocking(timeoutMs) {
-            synchronized(lock) {
-                if (!overlayAttached) return@synchronized false
-                val webView = hostedWebView ?: return@synchronized false
-                runCatching { windowManager?.removeViewImmediate(webView) }
-                    .onFailure {
-                        AppLog.add("OVERLAY", "suspend failed: " + (it.message ?: it.javaClass.simpleName))
-                    }
-                    .isSuccess
-                    .also { success ->
-                        if (success) {
-                            overlayAttached = false
-                            suspendedForUiInspection = true
-                            AppLog.add("OVERLAY", "suspended for UI inspection")
-                        }
-                    }
-            }
-        }
-
-    fun resumeAfterUiInspection(
+    fun setHiddenForScreenshot(
         context: Context,
+        hidden: Boolean,
         timeoutMs: Long = 1_000L
-    ): Boolean =
-        runOnMainBlocking(timeoutMs) {
-            synchronized(lock) {
-                if (!suspendedForUiInspection) return@synchronized false
-                val webView = hostedWebView ?: return@synchronized false
-                val wm = windowManager ?: context.applicationContext
-                    .getSystemService(WindowManager::class.java)
+    ): Boolean = runOnMainBlocking(timeoutMs) {
+        synchronized(lock) {
+            if (!overlayAttached) return@synchronized false
+            val webView = hostedWebView ?: return@synchronized false
+            val wm = windowManager ?: return@synchronized false
+            val params =
+                webView.layoutParams as? WindowManager.LayoutParams
+                    ?: return@synchronized false
 
-                runCatching {
-                    webView.importantForAccessibility =
-                        WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                    wm.addView(webView, createLayoutParams(context))
-                    windowManager = wm
-                    overlayAttached = true
-                    suspendedForUiInspection = false
-                    webView.visibility = WebView.VISIBLE
-                    webView.resumeTimers()
-                    webView.requestLayout()
-                    webView.invalidate()
-                    AppLog.add("OVERLAY", "resumed after UI inspection")
-                    true
-                }.getOrElse {
-                    overlayAttached = false
-                    AppLog.add("OVERLAY", "resume failed: " + (it.message ?: it.javaClass.simpleName))
-                    false
-                }
+            val newAlpha = if (hidden) 0f else OverlaySettings.getOpacity(context)
+            if (params.alpha == newAlpha && captureHidden == hidden) {
+                return@synchronized true
+            }
+
+            params.alpha = newAlpha
+            runCatching {
+                wm.updateViewLayout(webView, params)
+                captureHidden = hidden
+                AppLog.add(
+                    "OVERLAY",
+                    if (hidden) "hidden for screenshot" else "restored after screenshot"
+                )
+                true
+            }.getOrElse {
+                AppLog.add(
+                    "OVERLAY",
+                    "alpha update failed: " + (it.message ?: it.javaClass.simpleName)
+                )
+                false
             }
         }
+    }
 
     fun updateOpacity(context: Context) {
         synchronized(lock) {
-            if (!overlayAttached) return
+            if (!overlayAttached || captureHidden) return
             val webView = hostedWebView ?: return
             val wm = windowManager ?: return
-            val params = webView.layoutParams as? WindowManager.LayoutParams ?: return
+            val params =
+                webView.layoutParams as? WindowManager.LayoutParams ?: return
             params.alpha = OverlaySettings.getOpacity(context)
             runCatching { wm.updateViewLayout(webView, params) }
         }
@@ -131,7 +124,7 @@ object WebViewOverlayHost {
             if (overlayAttached && hostedWebView === webView) {
                 runCatching { windowManager?.removeViewImmediate(webView) }
                 overlayAttached = false
-                hostedWebView = null
+                captureHidden = false
             } else {
                 (webView.parent as? ViewGroup)?.let { parent ->
                     if (parent !== container) parent.removeView(webView)
@@ -147,7 +140,10 @@ object WebViewOverlayHost {
                     )
                 )
             }
-            webView.importantForAccessibility = WebView.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+
+            hostedWebView = webView
+            webView.importantForAccessibility =
+                WebView.IMPORTANT_FOR_ACCESSIBILITY_AUTO
             webView.visibility = WebView.VISIBLE
             webView.resumeTimers()
             webView.post {
@@ -164,7 +160,7 @@ object WebViewOverlayHost {
             }
             if (hostedWebView === webView) hostedWebView = null
             overlayAttached = false
-            suspendedForUiInspection = false
+            captureHidden = false
         }
     }
 
