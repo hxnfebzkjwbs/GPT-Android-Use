@@ -48,11 +48,17 @@ class MainActivity : AppCompatActivity() {
     private var webPageLoaded = false
     private var bridgeReloadInFlight = false
     private var bridgeHydrationStartedAt = 0L
+    private var lastBridgeHealthDetail = ""
+    private var lastBridgeHealthLogAt = 0L
     private val readinessHandler = Handler(Looper.getMainLooper())
+    private val bridgeHealthPollRunnable = Runnable {
+        if (isFinishing || isDestroyed) return@Runnable
+        checkBridgeReadinessAfterPageLoad()
+    }
     private val readinessRetryRunnable = Runnable {
         if (isFinishing || isDestroyed) return@Runnable
         if (!adbReady) checkAdbReadiness()
-        if (!bridgeReady) recoverBridgeByReload()
+        if (!bridgeReady) recoverBridgeWithoutReload()
         scheduleReadinessRetry()
     }
 
@@ -80,7 +86,7 @@ class MainActivity : AppCompatActivity() {
                     bridgeReady = false
                     updateConnectionStatus()
                     checkAdbReadiness()
-                    recoverBridgeByReload()
+                    recoverBridgeWithoutReload()
                     scheduleReadinessRetry()
                 }
                 SettingsActivity.ACTION_RELOAD_WEB -> {
@@ -354,76 +360,80 @@ class MainActivity : AppCompatActivity() {
                 updateConnectionStatus()
 
                 if (ok) {
+                    readinessHandler.removeCallbacks(bridgeHealthPollRunnable)
+                    lastBridgeHealthDetail = ""
+                    lastBridgeHealthLogAt = 0L
+                    val elapsed =
+                        if (bridgeHydrationStartedAt > 0L) {
+                            SystemClock.elapsedRealtime() -
+                                bridgeHydrationStartedAt
+                        } else {
+                            0L
+                        }
                     AppLog.add(
                         "BRIDGE_READY",
-                        "composer ready after " +
-                            (SystemClock.elapsedRealtime() -
-                                bridgeHydrationStartedAt) +
-                            "ms"
+                        "transport+composer ready after " + elapsed + "ms"
                     )
                     return@runOnUiThread
                 }
 
+                val now = SystemClock.elapsedRealtime()
                 val elapsed =
-                    SystemClock.elapsedRealtime() -
-                        bridgeHydrationStartedAt
+                    if (bridgeHydrationStartedAt > 0L) {
+                        now - bridgeHydrationStartedAt
+                    } else {
+                        0L
+                    }
 
-                if (
-                    bridgeHydrationStartedAt > 0L &&
-                    elapsed < BRIDGE_HYDRATION_GRACE_MS
-                ) {
+                val shouldLog =
+                    detail != lastBridgeHealthDetail ||
+                        now - lastBridgeHealthLogAt >=
+                            BRIDGE_WAIT_LOG_INTERVAL_MS
+
+                if (shouldLog) {
+                    val explanation =
+                        if (detail == "composer-missing") {
+                            "bridge script alive; composer unavailable; waiting without reload"
+                        } else {
+                            "bridge not ready; reinjecting script without reload"
+                        }
                     AppLog.add(
                         "BRIDGE_WAIT",
                         "health=" + detail +
                             " elapsed_ms=" + elapsed +
-                            "; waiting for ChatGPT hydration"
+                            "; " + explanation
                     )
-                    readinessHandler.postDelayed(
-                        {
-                            checkBridgeReadinessAfterPageLoad()
-                        },
-                        BRIDGE_HEALTH_POLL_MS
-                    )
-                } else {
-                    AppLog.add(
-                        "BRIDGE_WAIT",
-                        "hydration timeout health=" + detail +
-                            " elapsed_ms=" + elapsed
-                    )
-                    scheduleReadinessRetry()
+                    lastBridgeHealthDetail = detail
+                    lastBridgeHealthLogAt = now
                 }
+
+                // A missing composer is a UI/hydration state, not evidence that
+                // the WebView or bridge is dead. Never reload automatically.
+                // Re-injection is idempotent and is enough for true script-loss
+                // cases; polling will notice when the composer later appears.
+                if (detail != "composer-missing") {
+                    pageAdbBridge.installForCurrentPage()
+                }
+                scheduleBridgeHealthPoll()
             }
         }
     }
 
-    private fun recoverBridgeByReload() {
-        if (bridgeReady) return
-        if (webPageLoading || bridgeReloadInFlight) return
+    private fun recoverBridgeWithoutReload() {
+        if (bridgeReady || webPageLoading || !webPageLoaded) return
 
-        if (webPageLoaded && bridgeHydrationStartedAt > 0L) {
-            val elapsed =
-                SystemClock.elapsedRealtime() -
-                    bridgeHydrationStartedAt
-            if (elapsed < BRIDGE_HYDRATION_GRACE_MS) {
-                checkBridgeReadinessAfterPageLoad()
-                return
-            }
-        }
+        pageAdbBridge.installForCurrentPage()
+        scheduleBridgeHealthPoll(100L)
+    }
 
-        val currentUrl = binding.chatWebView.url.orEmpty()
-        if (currentUrl.isBlank() || currentUrl == "about:blank") {
-            return
-        }
-
-        bridgeReloadInFlight = true
-        webPageLoaded = false
-        bridgeHydrationStartedAt = 0L
-        bridgeCheckInFlight = false
-        AppLog.add(
-            "BRIDGE_RECOVERY",
-            "hydration timed out; reloading WebView and waiting for onPageFinished"
+    private fun scheduleBridgeHealthPoll(
+        delayMs: Long = BRIDGE_HEALTH_POLL_MS
+    ) {
+        readinessHandler.removeCallbacks(bridgeHealthPollRunnable)
+        readinessHandler.postDelayed(
+            bridgeHealthPollRunnable,
+            delayMs
         )
-        binding.chatWebView.reload()
     }
 
     private fun scheduleReadinessRetry() {
@@ -558,7 +568,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         checkAdbReadiness()
-        if (!bridgeReady) recoverBridgeByReload()
+        if (!bridgeReady) recoverBridgeWithoutReload()
         scheduleReadinessRetry()
         ensureOverlayCapability()
         startOverlayService()
@@ -566,6 +576,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         readinessHandler.removeCallbacks(readinessRetryRunnable)
+        readinessHandler.removeCallbacks(bridgeHealthPollRunnable)
         if (!isFinishing && ::binding.isInitialized) {
             startOverlayService()
             val backgroundAttached =
@@ -638,6 +649,7 @@ class MainActivity : AppCompatActivity() {
                 url: String,
                 favicon: android.graphics.Bitmap?
             ) {
+                readinessHandler.removeCallbacks(bridgeHealthPollRunnable)
                 webPageLoading = true
                 webPageLoaded = false
                 bridgeHydrationStartedAt = 0L
@@ -662,10 +674,7 @@ class MainActivity : AppCompatActivity() {
                 // SPA, so onPageFinished can occur before React has created the
                 // composer. Give hydration time before considering a reload.
                 pageAdbBridge.installForCurrentPage()
-                readinessHandler.postDelayed(
-                    {
-                        checkBridgeReadinessAfterPageLoad()
-                    },
+                scheduleBridgeHealthPoll(
                     BRIDGE_INITIAL_HEALTH_DELAY_MS
                 )
                 scheduleReadinessRetry()
@@ -759,7 +768,7 @@ class MainActivity : AppCompatActivity() {
         private const val CHATGPT_URL = "https://chatgpt.com/"
         private const val READINESS_RETRY_MS = 2_000L
         private const val BRIDGE_INITIAL_HEALTH_DELAY_MS = 750L
-        private const val BRIDGE_HEALTH_POLL_MS = 750L
-        private const val BRIDGE_HYDRATION_GRACE_MS = 10_000L
+        private const val BRIDGE_HEALTH_POLL_MS = 1_000L
+        private const val BRIDGE_WAIT_LOG_INTERVAL_MS = 5_000L
     }
 }
