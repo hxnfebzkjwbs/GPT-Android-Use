@@ -1,8 +1,11 @@
 package com.hxnfebzkjwbs.gptandroiduse
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 
 class TextInputAccessibilityService : AccessibilityService() {
@@ -103,6 +106,28 @@ class TextInputAccessibilityService : AccessibilityService() {
         private var current: TextInputAccessibilityService? = null
 
         fun isConnected(): Boolean = current != null
+
+        fun isEnabled(context: Context): Boolean {
+            if (isConnected()) return true
+            val manager =
+                context.getSystemService(AccessibilityManager::class.java)
+                    ?: return false
+
+            return manager
+                .getEnabledAccessibilityServiceList(
+                    AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+                )
+                .any { service ->
+                    val info = service.resolveInfo?.serviceInfo
+                    if (info?.packageName != context.packageName) {
+                        false
+                    } else {
+                        val name = info.name.orEmpty()
+                        name == TextInputAccessibilityService::class.java.name ||
+                            name.endsWith(".TextInputAccessibilityService")
+                    }
+                }
+        }
 
         fun setTextNow(text: String): Result<String> {
             val service = current

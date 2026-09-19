@@ -76,7 +76,7 @@ class FirstRunSetupActivity : AppCompatActivity() {
     private fun refreshStatus() {
         val overlayReady = Settings.canDrawOverlays(this)
         val accessibilityReady =
-            TextInputAccessibilityService.isConnected()
+            TextInputAccessibilityService.isEnabled(this)
         val notificationsReady =
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
                 ContextCompat.checkSelfPermission(
@@ -87,23 +87,38 @@ class FirstRunSetupActivity : AppCompatActivity() {
         val adbReady = adb.isSessionReady()
 
         binding.overlayStatus.text =
-            if (overlayReady) "已开启" else "未开启"
-        binding.accessibilityStatus.text =
-            if (accessibilityReady) "已开启" else "未开启"
-        binding.notificationStatus.text =
-            if (notificationsReady) "已开启" else "未开启"
-        binding.adbStatus.text =
-            when {
-                adbReady -> "已连接"
-                wirelessReady -> "已开启"
-                else -> "未配置"
-            }
+            if (overlayReady) "已完成" else "未开启"
+        binding.overlaySetupButton.text =
+            if (overlayReady) "已完成" else "开启"
+        binding.overlaySetupButton.isEnabled = !overlayReady
 
+        binding.accessibilityStatus.text =
+            if (accessibilityReady) "已完成" else "未开启"
+        binding.accessibilitySetupButton.text =
+            if (accessibilityReady) "已完成" else "开启"
+        binding.accessibilitySetupButton.isEnabled = !accessibilityReady
+
+        binding.notificationStatus.text =
+            if (notificationsReady) "已完成" else "未开启"
+        binding.notificationSetupButton.text =
+            if (notificationsReady) "已完成" else "开启"
         binding.notificationSetupButton.isEnabled =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 !notificationsReady
-        binding.notificationSetupButton.text =
-            if (notificationsReady) "已完成" else "开启"
+
+        binding.adbStatus.text =
+            when {
+                adbReady -> "已完成"
+                wirelessReady -> "无线调试已开启"
+                else -> "未配置"
+            }
+        binding.adbSetupButton.text =
+            when {
+                adbReady -> "已完成"
+                wirelessReady -> "继续配置"
+                else -> "配置"
+            }
+        binding.adbSetupButton.isEnabled = !adbReady
 
         binding.finishSetupButton.text =
             if (allRequiredReady()) "进入应用" else "稍后完成"
@@ -112,7 +127,7 @@ class FirstRunSetupActivity : AppCompatActivity() {
     private fun allRequiredReady(): Boolean {
         val overlayReady = Settings.canDrawOverlays(this)
         val accessibilityReady =
-            TextInputAccessibilityService.isConnected()
+            TextInputAccessibilityService.isEnabled(this)
         val notificationsReady =
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
                 ContextCompat.checkSelfPermission(
