@@ -33,6 +33,19 @@ class FirstRunSetupActivity : AppCompatActivity() {
 
         adb = AndroidAdbBridge(applicationContext)
 
+        binding.setupDescription.text =
+            if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                "依次开启悬浮窗、通知和无障碍控制权限。返回本页后状态会自动更新。"
+            } else {
+                "依次开启悬浮窗、通知和无线调试。返回本页后状态会自动更新。"
+            }
+
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            binding.adbCard.visibility = android.view.View.GONE
+        } else {
+            binding.accessibilityCard.visibility = android.view.View.GONE
+        }
+
         binding.overlaySetupButton.setOnClickListener {
             startActivity(
                 Intent(
@@ -83,8 +96,12 @@ class FirstRunSetupActivity : AppCompatActivity() {
                     this,
                     Manifest.permission.POST_NOTIFICATIONS
                 ) == PackageManager.PERMISSION_GRANTED
-        val wirelessReady = adb.isWirelessDebuggingEnabled()
-        val adbReady = adb.isSessionReady()
+        val wirelessReady =
+            BuildConfig.USE_ADB_BACKEND &&
+                adb.isWirelessDebuggingEnabled()
+        val adbReady =
+            BuildConfig.USE_ADB_BACKEND &&
+                adb.isSessionReady()
 
         binding.overlayStatus.text =
             if (overlayReady) "已完成" else "未开启"
@@ -127,14 +144,24 @@ class FirstRunSetupActivity : AppCompatActivity() {
                     this,
                     Manifest.permission.POST_NOTIFICATIONS
                 ) == PackageManager.PERMISSION_GRANTED
-        val wirelessReady = adb.isWirelessDebuggingEnabled()
-        val adbReady = adb.isSessionReady()
+        val wirelessReady =
+            BuildConfig.USE_ADB_BACKEND &&
+                adb.isWirelessDebuggingEnabled()
+        val adbReady =
+            BuildConfig.USE_ADB_BACKEND &&
+                adb.isSessionReady()
         val wirelessSetupReady = wirelessReady || adbReady
 
+        val controlReady =
+            if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                accessibilityReady
+            } else {
+                wirelessSetupReady
+            }
+
         return overlayReady &&
-            accessibilityReady &&
             notificationsReady &&
-            wirelessSetupReady
+            controlReady
     }
 
     companion object {

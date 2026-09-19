@@ -11,11 +11,33 @@ android {
         applicationId = "com.hxnfebzkjwbs.gptandroiduse"
         minSdk = 30
         targetSdk = 35
-        versionCode = 84
-        versionName = "0.14.15"
+        versionCode = 85
+        versionName = "0.15.0"
     }
 
-    buildFeatures { viewBinding = true }
+    flavorDimensions += "controlMode"
+
+    productFlavors {
+        create("adb") {
+            dimension = "controlMode"
+            buildConfigField("boolean", "USE_ADB_BACKEND", "true")
+            buildConfigField("boolean", "USE_ACCESSIBILITY_BACKEND", "false")
+            resValue("string", "app_name", "GPT Android Use ADB")
+        }
+
+        create("accessibility") {
+            dimension = "controlMode"
+            applicationIdSuffix = ".accessibility"
+            buildConfigField("boolean", "USE_ADB_BACKEND", "false")
+            buildConfigField("boolean", "USE_ACCESSIBILITY_BACKEND", "true")
+            resValue("string", "app_name", "GPT Android Use Accessibility")
+        }
+    }
+
+    buildFeatures {
+        viewBinding = true
+        buildConfig = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

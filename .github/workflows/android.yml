@@ -27,8 +27,8 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build unsigned release APK
-        run: gradle --no-daemon assembleRelease
+      - name: Build both release APKs
+        run: gradle --no-daemon assembleAdbRelease assembleAccessibilityRelease
 
       - name: Restore private signing key
         if: github.event_name != 'pull_request'
@@ -41,7 +41,7 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release-key.p12"
           chmod 600 "$RUNNER_TEMP/release-key.p12"
 
-      - name: Sign release APK
+      - name: Sign both release APKs
         if: github.event_name != 'pull_request'
         shell: bash
         env:
@@ -57,24 +57,32 @@ jobs:
           ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           test -n "$ZIPALIGN"
-          "$ZIPALIGN" -f -p 4             app/build/outputs/apk/release/app-release-unsigned.apk             "$RUNNER_TEMP/app-release-aligned.apk"
-          "$APKSIGNER" sign             --ks "$RUNNER_TEMP/release-key.p12"             --ks-key-alias "$ANDROID_KEY_ALIAS"             --ks-pass env:ANDROID_KEYSTORE_PASSWORD             --key-pass env:ANDROID_KEY_PASSWORD             --out GPT-Android-Use-0.14.15.apk             "$RUNNER_TEMP/app-release-aligned.apk"
 
-      - name: Verify private signing certificate
+          "$ZIPALIGN" -f -p 4 app/build/outputs/apk/adb/release/app-adb-release-unsigned.apk "$RUNNER_TEMP/app-adb-release-aligned.apk"
+          "$APKSIGNER" sign --ks "$RUNNER_TEMP/release-key.p12" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out GPT-Android-Use-ADB-0.15.0.apk "$RUNNER_TEMP/app-adb-release-aligned.apk"
+
+          "$ZIPALIGN" -f -p 4 app/build/outputs/apk/accessibility/release/app-accessibility-release-unsigned.apk "$RUNNER_TEMP/app-accessibility-release-aligned.apk"
+          "$APKSIGNER" sign --ks "$RUNNER_TEMP/release-key.p12" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out GPT-Android-Use-Accessibility-0.15.0.apk "$RUNNER_TEMP/app-accessibility-release-aligned.apk"
+
+      - name: Verify private signing certificates
         if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
           EXPECTED="21d060a53a5d9f810665d4c2a8f20cd418b48b237dadcca33570409e78443925"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
-          CERTS="$("$APKSIGNER" verify --verbose --print-certs GPT-Android-Use-0.14.15.apk 2>&1)"
-          echo "$CERTS"
-          echo "$CERTS" | grep -Fi "$EXPECTED"
+          for APK in GPT-Android-Use-ADB-0.15.0.apk GPT-Android-Use-Accessibility-0.15.0.apk; do
+            CERTS="$("$APKSIGNER" verify --verbose --print-certs "$APK" 2>&1)"
+            echo "$CERTS"
+            echo "$CERTS" | grep -Fi "$EXPECTED"
+          done
 
-      - name: Upload private-signed APK
+      - name: Upload private-signed APKs
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: GPT-Android-Use-private-release
-          path: GPT-Android-Use-0.14.15.apk
+          path: |
+            GPT-Android-Use-ADB-0.15.0.apk
+            GPT-Android-Use-Accessibility-0.15.0.apk
           if-no-files-found: error

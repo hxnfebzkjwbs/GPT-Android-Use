@@ -27,11 +27,26 @@ class SettingsActivity : AppCompatActivity() {
         binding.bridgeStatusText.text =
             if (bridgeReady) "已连接" else "未就绪"
         binding.accessibilityStatusText.text =
-            if (TextInputAccessibilityService.isConnected()) {
+            if (TextInputAccessibilityService.isEnabled(this)) {
                 "已启用"
             } else {
                 "未启用"
             }
+
+        binding.connectionBackendLabel.text =
+            if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+                "Accessibility"
+            } else {
+                "ADB"
+            }
+
+        if (BuildConfig.USE_ACCESSIBILITY_BACKEND) {
+            binding.adbSetupButton.visibility = View.GONE
+            binding.adbTestButton.visibility = View.GONE
+        } else {
+            binding.accessibilityStatusRow.visibility = View.GONE
+            binding.accessibilityButton.visibility = View.GONE
+        }
 
         val version =
             runCatching {
@@ -148,7 +163,7 @@ class SettingsActivity : AppCompatActivity() {
         super.onResume()
         if (::binding.isInitialized) {
             binding.accessibilityStatusText.text =
-                if (TextInputAccessibilityService.isConnected()) {
+                if (TextInputAccessibilityService.isEnabled(this)) {
                     "已启用"
                 } else {
                     "未启用"

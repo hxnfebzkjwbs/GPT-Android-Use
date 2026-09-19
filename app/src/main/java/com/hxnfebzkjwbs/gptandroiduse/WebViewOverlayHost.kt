@@ -338,21 +338,29 @@ object WebViewOverlayHost {
         screenHeight: Int,
         hostSide: Int
     ) {
+        val density =
+            root.resources.displayMetrics.density
+        val edge =
+            (FLOATING_EDGE_MARGIN_DP * density + 0.5f)
+                .toInt()
+
+        val minX = edge
+        val minY = edge
         val maxX =
-            (screenWidth - hostSide)
-                .coerceAtLeast(0)
+            (screenWidth - hostSide - edge)
+                .coerceAtLeast(minX)
         val maxY =
-            (screenHeight - hostSide)
-                .coerceAtLeast(0)
+            (screenHeight - hostSide - edge)
+                .coerceAtLeast(minY)
 
         params.x =
             (rawX - hostSide / 2f)
                 .roundToInt()
-                .coerceIn(0, maxX)
+                .coerceIn(minX, maxX)
         params.y =
             (rawY - hostSide / 2f)
                 .roundToInt()
-                .coerceIn(0, maxY)
+                .coerceIn(minY, maxY)
 
         overlayX = params.x
         overlayY = params.y
@@ -609,8 +617,7 @@ object WebViewOverlayHost {
             hostSide,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -660,4 +667,5 @@ object WebViewOverlayHost {
     private const val FLOATING_BUTTON_DP = 48f
     private const val FLOATING_DRAG_LONG_PRESS_MS = 2_000L
     private const val FLOATING_DRAG_VIBRATION_MS = 45L
+    private const val FLOATING_EDGE_MARGIN_DP = 4f
 }
