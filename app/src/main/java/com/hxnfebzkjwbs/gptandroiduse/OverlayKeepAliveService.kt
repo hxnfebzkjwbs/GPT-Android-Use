@@ -7,17 +7,43 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 
 class OverlayKeepAliveService : Service() {
+    private val handler = Handler(Looper.getMainLooper())
+    private var keepAliveTicks = 0L
+
+    private val keepAliveTask = object : Runnable {
+        override fun run() {
+            val ok = WebViewOverlayHost.keepAliveTick()
+            keepAliveTicks += 1
+
+            if (keepAliveTicks % KEEPALIVE_LOG_EVERY_TICKS == 0L) {
+                AppLog.add(
+                    "NATIVE_KEEPALIVE",
+                    "tick=" + keepAliveTicks + " webview_tick=" + ok
+                )
+            }
+
+            handler.postDelayed(this, KEEPALIVE_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
         startInForeground()
+        handler.removeCallbacks(keepAliveTask)
+        handler.post(keepAliveTask)
+        AppLog.add("NATIVE_KEEPALIVE", "started")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!handler.hasCallbacks(keepAliveTask)) {
+            handler.post(keepAliveTask)
+        }
         return START_STICKY
     }
 
@@ -64,6 +90,8 @@ class OverlayKeepAliveService : Service() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(keepAliveTask)
+        AppLog.add("NATIVE_KEEPALIVE", "stopped")
         super.onDestroy()
     }
 
@@ -72,6 +100,8 @@ class OverlayKeepAliveService : Service() {
     companion object {
         private const val CHANNEL_ID = "ai_overlay_control"
         private const val NOTIFICATION_ID = 1102
+        private const val KEEPALIVE_INTERVAL_MS = 1_000L
+        private const val KEEPALIVE_LOG_EVERY_TICKS = 5L
         const val ACTION_UPDATE_OPACITY =
             "com.hxnfebzkjwbs.gptandroiduse.UPDATE_OVERLAY_OPACITY"
     }

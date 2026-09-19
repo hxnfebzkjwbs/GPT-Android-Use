@@ -107,6 +107,32 @@ object WebViewOverlayHost {
         }
     }
 
+    fun keepAliveTick(): Boolean = runOnMainBlocking(900L) {
+        synchronized(lock) {
+            val webView = hostedWebView ?: return@synchronized false
+
+            runCatching {
+                webView.resumeTimers()
+                webView.onResume()
+                webView.evaluateJavascript(
+                    "(function(){return String(Date.now())})()"
+                ) { value ->
+                    AppLog.add(
+                        "JS_KEEPALIVE",
+                        "callback=" + value.take(64)
+                    )
+                }
+                true
+            }.getOrElse {
+                AppLog.add(
+                    "WEBVIEW_KEEPALIVE",
+                    "failed: " + (it.message ?: it.javaClass.simpleName)
+                )
+                false
+            }
+        }
+    }
+
     fun updateOpacity(context: Context) {
         synchronized(lock) {
             if (!overlayAttached || captureHidden) return

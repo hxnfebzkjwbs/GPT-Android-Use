@@ -243,7 +243,17 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             useWideViewPort = true
             loadWithOverviewMode = false
+            offscreenPreRaster = true
         }
+
+        webView.setRendererPriorityPolicy(
+            WebView.RENDERER_PRIORITY_IMPORTANT,
+            false
+        )
+        AppLog.add(
+            "WEBVIEW",
+            "renderer_priority=IMPORTANT waivedWhenNotVisible=false offscreenPreRaster=true"
+        )
 
         WebView.setWebContentsDebuggingEnabled(
             (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
