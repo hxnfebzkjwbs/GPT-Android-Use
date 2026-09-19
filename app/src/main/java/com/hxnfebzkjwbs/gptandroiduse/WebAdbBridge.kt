@@ -324,7 +324,7 @@ class WebAdbBridge(
             return
         }
         if (!inFlight.add(requestId)) return
-        postStatus("Bridge: Native received ADB_EXEC")
+        postStatus("Bridge: Native received ADB command")
         val executionGeneration = stopGeneration.get()
 
         executor.execute {
@@ -336,7 +336,7 @@ class WebAdbBridge(
                     postResult(
                         requestId,
                         false,
-                        "ADB_EXEC block rejected: invalid task-status/STEP structure."
+                        "Device command rejected: missing or invalid STATUS: 进行中."
                     )
                     return@execute
                 }
@@ -347,8 +347,8 @@ class WebAdbBridge(
                     postResult(
                         requestId,
                         false,
-                        "ADB_EXEC block rejected: missing required STEP description.\n" +
-                            "Use exactly:\nADB_EXEC\nSTATUS: 进行中\nSTEP: 用一句中文说明这一步做什么以及依据\n<one adb shell command>"
+                        "Device command rejected: missing required STEP description.\n" +
+                            "Use exactly:\nSTATUS: 进行中\nSTEP: 用一句中文说明这一步做什么以及依据\nADB: <one adb shell command>"
                     )
                     return@execute
                 }
@@ -366,14 +366,14 @@ class WebAdbBridge(
 
                 val commands = parseCommands(payload)
                 if (commands.isEmpty()) {
-                    postResult(requestId, false, "ADB_EXEC block contains no command after STEP")
+                    postResult(requestId, false, "Device reply contains no ADB: command")
                     return@execute
                 }
                 if (commands.size > MAX_COMMANDS_PER_BLOCK) {
                     postResult(
                         requestId,
                         false,
-                        "ADB_EXEC block exceeds the limit of $MAX_COMMANDS_PER_BLOCK commands"
+                        "Device reply exceeds the limit of $MAX_COMMANDS_PER_BLOCK ADB: commands"
                     )
                     return@execute
                 }
@@ -382,7 +382,7 @@ class WebAdbBridge(
                     postResult(
                         requestId,
                         false,
-                        "Only one ADB command is allowed per ADB_EXEC. " +
+                        "Only one ADB: command is allowed per assistant step. " +
                             "Send one step, wait for ADB_RESULT, then decide the next step."
                     )
                     return@execute
@@ -586,7 +586,7 @@ class WebAdbBridge(
             appendLine()
             appendLine()
             append("Do not retry the same device command automatically. ")
-            append("Use these diagnostics to determine the failure cause before issuing another ADB_EXEC.")
+            append("Use these diagnostics to determine the failure cause before issuing another ADB: command.")
         }.take(MAX_RESULT_CHARS)
     }
 
@@ -625,8 +625,6 @@ class WebAdbBridge(
 
     private fun parseTaskStatus(payload: String): String? {
         val lines = normalizedBlockLines(payload)
-        if (lines.isEmpty() || lines.first() != EXEC_MARKER) return null
-
         val statusLine = lines.firstOrNull {
             it.startsWith(STATUS_MARKER, ignoreCase = true)
         } ?: return null
@@ -637,8 +635,6 @@ class WebAdbBridge(
 
     private fun parseStepDescription(payload: String): String? {
         val lines = normalizedBlockLines(payload)
-        if (lines.isEmpty() || lines.first() != EXEC_MARKER) return null
-
         val stepLine = lines.firstOrNull {
             it.startsWith(STEP_MARKER, ignoreCase = true)
         } ?: return null
@@ -649,21 +645,14 @@ class WebAdbBridge(
 
     private fun parseCommands(payload: String): List<String> {
         val lines = normalizedBlockLines(payload)
-        if (lines.isEmpty() || lines.first() != EXEC_MARKER) {
-            return emptyList()
-        }
-
-        val stepIndex = lines.indexOfFirst {
-            it.startsWith(STEP_MARKER, ignoreCase = true)
-        }
-        if (stepIndex < 0) return emptyList()
-
         return lines
-            .drop(stepIndex + 1)
-            .filterNot {
-                it.startsWith(STATUS_MARKER, ignoreCase = true) ||
-                    it.startsWith(STEP_MARKER, ignoreCase = true)
+            .filter {
+                it.startsWith(ADB_COMMAND_MARKER, ignoreCase = true)
             }
+            .map {
+                it.substringAfter(":").trim()
+            }
+            .filter { it.isNotBlank() }
     }
 
     private fun postResult(requestId: String, ok: Boolean, output: String) {
@@ -734,7 +723,6 @@ class WebAdbBridge(
     private fun installScript(): String = """
         (function() {
           const TOKEN = '$sessionToken';
-          const MARKER = '$EXEC_MARKER';
 
           if (window.__gptAndroidUseBridgeInstalled) {
             window.__gptAndroidUseSetBridgeEnabled(true);
@@ -745,12 +733,12 @@ class WebAdbBridge(
           const BRIDGE_HINT =
             '\n\n' + PROTOCOL_TAG + '\n' +
             'For every assistant turn in this device-control task, include a task status. ' +
-            'If another device action is required, output exactly one fenced code block using this mandatory four-line format: ' +
-            'ADB_EXEC, then STATUS: 进行中, then STEP: followed by ONE short Chinese sentence explaining what this step does and what evidence justifies it, then exactly ONE adb shell command. ' +
+            'If another device action is required, output exactly these three lines, preferably inside one fenced code block: ' +
+            'STATUS: 进行中, then STEP: followed by ONE short Chinese sentence explaining what this step does and what evidence justifies it, then ADB: followed by exactly ONE adb shell command without the "adb shell" prefix. ' +
             'When no further device action is required, begin the normal final answer with STATUS: 成功 or STATUS: 失败. ' +
-            'The native bridge rejects ADB_EXEC blocks that do not contain STATUS: 进行中 and STEP. ' +
-            'without the "adb shell" prefix. Never batch multiple device commands in one reply. ' +
-            'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB_EXEC step is needed. ' +
+            'The native bridge rejects device-action replies that do not contain STATUS: 进行中, STEP:, and exactly one ADB: command line. ' +
+            'Never batch multiple device commands in one reply. ' +
+            'After ADB_RESULT arrives, inspect it and only then decide whether another single ADB: command is needed. ' +
             'Never tap guessed coordinates. First use UI_SNAPSHOT/OCR. If OCR cannot identify a visual-only target such as an icon or photo thumbnail, request exactly "screencap -p"; the next ADB_RESULT will include the real target-app screenshot as an image attachment. ' +
             'After receiving an attached screenshot, inspect the image itself and return coordinates in its stated image_size coordinate system. ' +
             'If the desired control is not visible, use a semantically relevant and validated navigation control from the latest snapshot to continue toward the goal; do not probe random locations. ' +
@@ -1006,83 +994,71 @@ class WebAdbBridge(
             return stopButtons().some(button => isVisible(button) && !button.disabled);
           }
 
+          function normalizeProtocolLine(line) {
+            return String(line || '')
+              .trim()
+              .replace(/^```[A-Za-z0-9_-]*\s*/, '')
+              .replace(/```$/, '')
+              .trim();
+          }
+
           function extractPayload(node) {
             const raw =
               (node.innerText || node.textContent || '')
                 .replace(/\r/g, '');
-            const lines = raw.split('\n');
-
-            const markerIndex = lines.findIndex(line => {
-              const normalized =
-                line
-                  .trim()
-                  .replace(/^```[A-Za-z0-9_-]*\s*/, '')
-                  .replace(/```$/, '')
-                  .trim();
-              return (
-                normalized === MARKER ||
-                normalized.startsWith(MARKER + ' ')
+            const lines = raw
+              .split('\n')
+              .map(normalizeProtocolLine)
+              .filter(line =>
+                !!line &&
+                line !== '```' &&
+                !/^(copy code|copy)$/i.test(line)
               );
-            });
-            if (markerIndex < 0) return '';
 
-            const payload = [MARKER];
-            for (
-              let i = markerIndex + 1;
-              i < lines.length && payload.length <= 10;
-              i++
-            ) {
-              let line = lines[i].trim();
-              if (/^```/.test(line)) {
-                line = line.replace(/^```[A-Za-z0-9_-]*/, '').trim();
-              }
-              if (line === '```') break;
-              if (!line && payload.length > 1) break;
-              if (!line) continue;
-              if (/^(copy code|copy)$/i.test(line)) continue;
-              payload.push(line);
+            const statusLine = lines.find(line =>
+              /^STATUS:\s*进行中\s*$/i.test(line)
+            ) || '';
+            const stepLine = lines.find(line =>
+              /^STEP:\s*.+/i.test(line)
+            ) || '';
+            const adbLines = lines.filter(line =>
+              /^ADB:\s*\S.+/i.test(line)
+            );
+
+            if (!statusLine || !stepLine || adbLines.length !== 1) {
+              return '';
             }
 
-            return payload.join('\n').trim();
+            return [
+              statusLine,
+              stepLine,
+              adbLines[0]
+            ].join('\n');
           }
 
           function commandPayloads(surface) {
             if (!surface) return [];
-            const out = [];
-            const nestedCode = Array.from(surface.querySelectorAll('pre code'));
-            const preBlocks = Array.from(surface.querySelectorAll('pre'));
-            const looseCode = Array.from(surface.querySelectorAll('code'))
-              .filter(code => !code.closest('pre'));
 
-            if (nestedCode.length) {
-              nestedCode.forEach(code => out.push(code));
-            } else if (preBlocks.length) {
-              preBlocks.forEach(pre => out.push(pre));
-            }
-            looseCode.forEach(code => out.push(code));
+            const candidates = [];
+            Array.from(surface.querySelectorAll('pre code, pre, code'))
+              .forEach(node => candidates.push(node));
 
-            if (!out.length) {
-              const wholeText = (surface.innerText || surface.textContent || '');
-              if (wholeText.includes(MARKER)) out.push(surface);
-            }
+            // Always include the whole assistant turn. This makes protocol
+            // detection independent of how ChatGPT rendered markdown/code.
+            candidates.push(surface);
 
-            const payloads = uniqueElements(out)
+            const payloads = uniqueElements(candidates)
               .map(node => extractPayload(node))
               .filter(payload => !!payload);
 
             if (!payloads.length) {
               const wholeText =
                 (surface.innerText || surface.textContent || '');
-              if (wholeText.includes(MARKER)) {
-                const fallback = extractPayload(surface);
-                if (fallback) {
-                  payloads.push(fallback);
-                } else {
-                  nativeStatus(
-                    'ADB_BLOCK_EXTRACT_FAILED',
-                    wholeText.slice(0, 500)
-                  );
-                }
+              if (/^|\n\s*ADB:\s*\S/im.test(wholeText)) {
+                nativeStatus(
+                  'ADB_COMMAND_EXTRACT_FAILED',
+                  wholeText.slice(0, 500)
+                );
               }
             }
 
@@ -1676,7 +1652,7 @@ class WebAdbBridge(
               'status: ' + (ok ? 'OK' : 'ERROR') + '\n' +
               output + '\n\n' +
               'The device command has finished. Inspect this result before deciding the next action. ' +
-              'If the original request still needs device work, the next code block MUST be: ADB_EXEC, then STATUS: 进行中, then STEP: <one short Chinese sentence>, then exactly ONE command. ' +
+              'If the original request still needs device work, the next reply MUST contain: STATUS: 进行中, then STEP: <one short Chinese sentence>, then exactly ONE ADB: <command> line. ' +
               'If no further device action is needed, begin the final answer with STATUS: 成功 or STATUS: 失败. ' +
               'If an error says no target app is established or the target is not foreground, launch/re-open the intended target app first. ' +
               'Do not batch multiple commands. Use UI/OCR first. If the needed target is visual-only and OCR cannot locate it, request screencap -p so the next ADB_RESULT includes the real screenshot image. ' +
@@ -1898,7 +1874,7 @@ class WebAdbBridge(
 
             const prompt =
               '请通过 Android ADB 读取当前手机电池状态。严格返回一个代码块：' +
-              '第一行 ADB_EXEC，第二行 STEP: 读取当前手机电池状态，第三行 dumpsys battery。' +
+              '第一行 STATUS: 进行中，第二行 STEP: 读取当前手机电池状态，第三行 ADB: dumpsys battery。' +
               BRIDGE_HINT;
 
             oneTapPending = true;
@@ -2049,7 +2025,7 @@ class WebAdbBridge(
     """.trimIndent()
 
     companion object {
-        private const val EXEC_MARKER = "ADB_EXEC"
+        private const val ADB_COMMAND_MARKER = "ADB:"
         private const val STATUS_MARKER = "STATUS:"
         private const val STEP_MARKER = "STEP:"
         private const val STATUS_IN_PROGRESS = "进行中"

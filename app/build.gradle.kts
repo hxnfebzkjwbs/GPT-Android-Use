@@ -11,8 +11,8 @@ android {
         applicationId = "com.hxnfebzkjwbs.gptandroiduse"
         minSdk = 30
         targetSdk = 35
-        versionCode = 68
-        versionName = "0.13.4"
+        versionCode = 69
+        versionName = "0.14.0"
     }
 
     buildFeatures { viewBinding = true }
