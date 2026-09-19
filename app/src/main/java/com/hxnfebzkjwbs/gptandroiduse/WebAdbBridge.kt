@@ -627,21 +627,12 @@ class WebAdbBridge(
         val lines = normalizedBlockLines(payload)
         if (lines.isEmpty() || lines.first() != EXEC_MARKER) return null
 
-        val explicit = lines.firstOrNull {
+        val statusLine = lines.firstOrNull {
             it.startsWith(STATUS_MARKER, ignoreCase = true)
-        }?.substringAfter(":")?.trim()
+        } ?: return null
 
-        if (explicit != null) {
-            return explicit.takeIf { it == STATUS_IN_PROGRESS }
-        }
-
-        // Compatibility: an otherwise valid ADB_EXEC block from the model may
-        // omit STATUS. Do not deadlock the automation for that formatting
-        // mistake; Native owns the runtime state and can safely infer 进行中.
-        val hasStep = lines.any {
-            it.startsWith(STEP_MARKER, ignoreCase = true)
-        }
-        return if (hasStep) STATUS_IN_PROGRESS else null
+        return statusLine.substringAfter(":").trim()
+            .takeIf { it == STATUS_IN_PROGRESS }
     }
 
     private fun parseStepDescription(payload: String): String? {
@@ -1028,7 +1019,10 @@ class WebAdbBridge(
                   .replace(/^\`\`\`[A-Za-z0-9_-]*\s*/, '')
                   .replace(/\`\`\`$/, '')
                   .trim();
-              return normalized === MARKER;
+              return (
+                normalized === MARKER ||
+                normalized.startsWith(MARKER + ' ')
+              );
             });
             if (markerIndex < 0) return '';
 
@@ -1081,7 +1075,14 @@ class WebAdbBridge(
                 (surface.innerText || surface.textContent || '');
               if (wholeText.includes(MARKER)) {
                 const fallback = extractPayload(surface);
-                if (fallback) payloads.push(fallback);
+                if (fallback) {
+                  payloads.push(fallback);
+                } else {
+                  nativeStatus(
+                    'ADB_BLOCK_EXTRACT_FAILED',
+                    wholeText.slice(0, 500)
+                  );
+                }
               }
             }
 
