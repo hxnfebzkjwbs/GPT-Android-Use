@@ -24,6 +24,7 @@ interface AdbBridge {
     fun execute(command: String, userApproved: Boolean = false): Result<String>
     fun probe(): Result<Unit>
     fun isConnected(): Boolean
+    fun isSessionReady(): Boolean
     fun hasSelfHealPermission(): Boolean
     fun grantSelfHealPermission(): Result<Unit>
     fun isWirelessDebuggingEnabled(): Boolean
@@ -31,7 +32,7 @@ interface AdbBridge {
     fun isWifiConnected(): Boolean
     fun disconnect()
     fun diagnostics(): String
-    fun observeUi(): Result<String>
+    fun observeUi(verifyTarget: Boolean = true): Result<String>
 }
 
 class AndroidAdbBridge(private val context: Context) : AdbBridge {
@@ -139,7 +140,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             val normalized = command.trim().replace(Regex("\\s+"), " ")
             when {
                 normalized.startsWith("uiautomator dump", ignoreCase = true) -> {
-                    requireTargetForeground()
                     observeUi().getOrThrow()
                 }
 
@@ -189,6 +189,16 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     override fun isConnected(): Boolean =
         runCatching { manager().isConnected }.getOrDefault(false)
 
+    override fun isSessionReady(): Boolean =
+        synchronized(shellLock) {
+            runCatching {
+                manager().isConnected &&
+                    shellStream?.isClosed == false &&
+                    shellReader != null &&
+                    shellWriter != null
+            }.getOrDefault(false)
+        }
+
     override fun hasSelfHealPermission(): Boolean =
         context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) ==
             PackageManager.PERMISSION_GRANTED
@@ -221,9 +231,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         }
     }
 
-    override fun observeUi(): Result<String> = runCatching {
+    override fun observeUi(verifyTarget: Boolean): Result<String> = runCatching {
         lastStage = "ui_observe"
-        requireTargetForeground()
+        if (verifyTarget) requireTargetForeground()
         val raw = runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
         val xml = extractHierarchyXml(raw)
         val summary = summarizeUiXml(xml)
@@ -379,13 +389,13 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         val declared = extractDeclaredTargetPackage(command)
         var foreground = ""
 
-        repeat(TARGET_LAUNCH_POLL_ATTEMPTS) { attempt ->
+        for (attempt in 0 until TARGET_LAUNCH_POLL_ATTEMPTS) {
             if (attempt > 0) Thread.sleep(TARGET_LAUNCH_POLL_DELAY_MS)
             foreground = currentForegroundPackage()
             if (foreground.isNotBlank() &&
                 foreground != context.packageName
             ) {
-                return@repeat
+                break
             }
         }
 
@@ -420,7 +430,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     }
 
     private fun currentForegroundPackage(): String {
-        val windowDump = runShellUnchecked("dumpsys window windows")
+        val windowDump = runShellUnchecked(
+            "dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp'"
+        )
         val windowPatterns = listOf(
             Regex("mCurrentFocus=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+"),
             Regex("mFocusedApp=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+")
@@ -434,7 +446,9 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
             }
         }
 
-        val activityDump = runShellUnchecked("dumpsys activity activities")
+        val activityDump = runShellUnchecked(
+            "dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity|ResumedActivity'"
+        )
         val activityPatterns = listOf(
             Regex("mResumedActivity:.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+"),
             Regex("topResumedActivity=.*?\\s([A-Za-z0-9._]+)/[A-Za-z0-9.\$_/]+"),

@@ -2,6 +2,7 @@ package com.hxnfebzkjwbs.gptandroiduse
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import org.json.JSONObject
@@ -221,23 +222,35 @@ class WebAdbBridge(
                     }
                 }
 
+                val totalStartedAt = SystemClock.elapsedRealtime()
+
                 failurePhase = "adb_prepare"
                 postStatus("Bridge: connecting ADB…")
+                val prepareStartedAt = SystemClock.elapsedRealtime()
                 ensureAdbReady().getOrThrow()
+                val prepareMs = SystemClock.elapsedRealtime() - prepareStartedAt
 
                 failurePhase = "command_execute_1"
                 postStatus("Bridge: executing 1/1")
+                val commandStartedAt = SystemClock.elapsedRealtime()
                 val result = adb.execute(command, userApproved).getOrThrow()
+                val commandMs = SystemClock.elapsedRealtime() - commandStartedAt
+
                 val observeAfter = shouldObserveAfter(command)
+                var observeMs = 0L
                 val uiSnapshot = if (observeAfter) {
                     postStatus("Bridge: observing UI")
-                    adb.observeUi().getOrElse {
+                    val observeStartedAt = SystemClock.elapsedRealtime()
+                    val snapshot = adb.observeUi(false).getOrElse {
                         "UI_SNAPSHOT_ERROR: " + (it.message ?: it.javaClass.simpleName)
                     }
+                    observeMs = SystemClock.elapsedRealtime() - observeStartedAt
+                    snapshot
                 } else {
                     ""
                 }
 
+                val totalMs = SystemClock.elapsedRealtime() - totalStartedAt
                 val output = buildString {
                     append("[1] $ ")
                     append(command)
@@ -249,6 +262,14 @@ class WebAdbBridge(
                         append("\n\n")
                         append(uiSnapshot)
                     }
+                    append("\n\ntiming_ms: prepare=")
+                    append(prepareMs)
+                    append(" command=")
+                    append(commandMs)
+                    append(" observe=")
+                    append(observeMs)
+                    append(" total=")
+                    append(totalMs)
                 }.take(MAX_RESULT_CHARS)
 
                 postStatus("Bridge: ready")
@@ -270,6 +291,10 @@ class WebAdbBridge(
     }
 
     private fun ensureAdbReady(): Result<Unit> {
+        if (adb.isSessionReady()) {
+            return Result.success(Unit)
+        }
+
         if (adb.isConnected()) {
             val probe = adb.probe()
             if (probe.isSuccess) return Result.success(Unit)
