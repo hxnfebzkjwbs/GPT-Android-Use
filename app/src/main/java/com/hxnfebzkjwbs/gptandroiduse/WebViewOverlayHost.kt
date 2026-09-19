@@ -13,6 +13,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.view.ViewGroup
@@ -207,17 +208,45 @@ object WebViewOverlayHost {
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
         var downX = 0f
         var downY = 0f
+        var currentRawX = 0f
+        var currentRawY = 0f
+        var dragStartRawX = 0f
+        var dragStartRawY = 0f
         var startX = 0
         var startY = 0
         var pointerDown = false
-        var cancelledBeforeLongPress = false
+        var movedBeforeLongPress = false
         var dragUnlocked = false
 
+        bubble.isHapticFeedbackEnabled = true
+
         val longPressRunnable = Runnable {
-            if (!pointerDown || cancelledBeforeLongPress) return@Runnable
+            if (!pointerDown) return@Runnable
+
+            val params =
+                root.layoutParams as? WindowManager.LayoutParams
+                    ?: return@Runnable
+
             dragUnlocked = true
-            vibrateForDrag(context)
-            AppLog.add("MICRO_OVERLAY", "drag unlocked after long press")
+            dragStartRawX = currentRawX
+            dragStartRawY = currentRawY
+            startX = params.x
+            startY = params.y
+            bubble.alpha = 1f
+
+            val hapticDone =
+                bubble.performHapticFeedback(
+                    HapticFeedbackConstants.LONG_PRESS,
+                    HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+                )
+            if (!hapticDone) {
+                vibrateForDrag(context)
+            }
+
+            AppLog.add(
+                "MICRO_OVERLAY",
+                "drag unlocked after " + FLOATING_DRAG_LONG_PRESS_MS + "ms"
+            )
         }
 
         bubble.setOnTouchListener { _, event ->
@@ -229,11 +258,13 @@ object WebViewOverlayHost {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
                     downY = event.rawY
-                    startX = params.x
-                    startY = params.y
+                    currentRawX = event.rawX
+                    currentRawY = event.rawY
                     pointerDown = true
-                    cancelledBeforeLongPress = false
+                    movedBeforeLongPress = false
                     dragUnlocked = false
+                    bubble.alpha = 0.72f
+
                     mainHandler.removeCallbacks(longPressRunnable)
                     mainHandler.postDelayed(
                         longPressRunnable,
@@ -243,24 +274,31 @@ object WebViewOverlayHost {
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - downX
-                    val dy = event.rawY - downY
-                    val distance = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                    currentRawX = event.rawX
+                    currentRawY = event.rawY
 
-                    if (!dragUnlocked && distance > touchSlop) {
-                        cancelledBeforeLongPress = true
-                        mainHandler.removeCallbacks(longPressRunnable)
+                    val preLongPressDistance =
+                        hypot(
+                            (event.rawX - downX).toDouble(),
+                            (event.rawY - downY).toDouble()
+                        ).toFloat()
+                    if (preLongPressDistance > touchSlop) {
+                        movedBeforeLongPress = true
                     }
 
                     if (dragUnlocked) {
+                        val dx = event.rawX - dragStartRawX
+                        val dy = event.rawY - dragStartRawY
                         val maxX = (screenWidth - hostSide).coerceAtLeast(0)
                         val maxY = (screenHeight - hostSide).coerceAtLeast(0)
+
                         params.x =
                             (startX - dx.roundToInt()).coerceIn(0, maxX)
                         params.y =
                             (startY - dy.roundToInt()).coerceIn(0, maxY)
                         overlayX = params.x
                         overlayY = params.y
+
                         runCatching {
                             wm.updateViewLayout(root, params)
                         }
@@ -271,14 +309,9 @@ object WebViewOverlayHost {
                 MotionEvent.ACTION_UP -> {
                     pointerDown = false
                     mainHandler.removeCallbacks(longPressRunnable)
-                    val dx = event.rawX - downX
-                    val dy = event.rawY - downY
-                    val distance = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                    bubble.alpha = 1f
 
-                    if (!dragUnlocked &&
-                        !cancelledBeforeLongPress &&
-                        distance <= touchSlop
-                    ) {
+                    if (!dragUnlocked && !movedBeforeLongPress) {
                         openMainActivity(context)
                     }
                     true
@@ -287,6 +320,7 @@ object WebViewOverlayHost {
                 MotionEvent.ACTION_CANCEL -> {
                     pointerDown = false
                     mainHandler.removeCallbacks(longPressRunnable)
+                    bubble.alpha = 1f
                     true
                 }
 
