@@ -250,12 +250,24 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
     override fun observeUi(verifyTarget: Boolean): Result<String> = runCatching {
         lastStage = "ui_observe"
         if (verifyTarget) requireTargetForeground()
-        val raw = runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
-        val xml = extractHierarchyXml(raw)
-        val summary = summarizeUiXml(xml)
-        lastStage = "ui_observe_ok"
-        lastError = "none"
-        summary
+
+        val overlaySuspended = WebViewOverlayHost.suspendForUiInspection()
+        if (overlaySuspended) {
+            Thread.sleep(OVERLAY_UI_SETTLE_MS)
+        }
+
+        try {
+            val raw = runShellUnchecked("uiautomator dump " + UI_DUMP_STDOUT)
+            val xml = extractHierarchyXml(raw)
+            val summary = summarizeUiXml(xml)
+            lastStage = "ui_observe_ok"
+            lastError = "none"
+            summary
+        } finally {
+            if (overlaySuspended) {
+                WebViewOverlayHost.resumeAfterUiInspection(context)
+            }
+        }
     }.onFailure {
         recordFailure("ui_observe", it)
     }
@@ -703,5 +715,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val TARGET_LAUNCH_POLL_ATTEMPTS = 6
         private const val TARGET_LAUNCH_POLL_DELAY_MS = 200L
         private const val TAP_SNAPSHOT_MAX_AGE_MS = 60_000L
+        private const val OVERLAY_UI_SETTLE_MS = 120L
     }
 }
