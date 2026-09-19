@@ -106,19 +106,12 @@ class FirstRunSetupActivity : AppCompatActivity() {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 !notificationsReady
 
+        val wirelessSetupReady = wirelessReady || adbReady
         binding.adbStatus.text =
-            when {
-                adbReady -> "已完成"
-                wirelessReady -> "无线调试已开启"
-                else -> "未配置"
-            }
+            if (wirelessSetupReady) "已完成" else "未配置"
         binding.adbSetupButton.text =
-            when {
-                adbReady -> "已完成"
-                wirelessReady -> "继续配置"
-                else -> "配置"
-            }
-        binding.adbSetupButton.isEnabled = !adbReady
+            if (wirelessSetupReady) "已完成" else "配置"
+        binding.adbSetupButton.isEnabled = !wirelessSetupReady
 
         binding.finishSetupButton.text =
             if (allRequiredReady()) "进入应用" else "稍后完成"
@@ -134,12 +127,14 @@ class FirstRunSetupActivity : AppCompatActivity() {
                     this,
                     Manifest.permission.POST_NOTIFICATIONS
                 ) == PackageManager.PERMISSION_GRANTED
+        val wirelessReady = adb.isWirelessDebuggingEnabled()
         val adbReady = adb.isSessionReady()
+        val wirelessSetupReady = wirelessReady || adbReady
 
         return overlayReady &&
             accessibilityReady &&
             notificationsReady &&
-            adbReady
+            wirelessSetupReady
     }
 
     companion object {
