@@ -200,8 +200,6 @@ object WebViewOverlayHost {
         var downAt = 0L
         var latestRawX = 0f
         var latestRawY = 0f
-        var lastDragRawX = 0f
-        var lastDragRawY = 0f
 
         bubble.isHapticFeedbackEnabled = true
 
@@ -209,8 +207,6 @@ object WebViewOverlayHost {
             if (!pointerDown || dragUnlocked) return
 
             dragUnlocked = true
-            lastDragRawX = rawX
-            lastDragRawY = rawY
             bubble.alpha = 1f
 
             val hapticDone =
@@ -221,6 +217,22 @@ object WebViewOverlayHost {
             if (!hapticDone) {
                 vibrateForDrag(context)
             }
+
+            // At the unlock moment, immediately center the icon under the
+            // finger instead of preserving any press-point offset.
+            val params =
+                root.layoutParams as? WindowManager.LayoutParams
+                    ?: return
+            moveFloatingIconToFinger(
+                wm,
+                root,
+                params,
+                rawX,
+                rawY,
+                screenWidth,
+                screenHeight,
+                hostSide
+            )
 
             AppLog.add(
                 "MICRO_OVERLAY",
@@ -268,38 +280,16 @@ object WebViewOverlayHost {
                     }
 
                     if (dragUnlocked) {
-                        val dx =
-                            (event.rawX - lastDragRawX)
-                                .roundToInt()
-                        val dy =
-                            (event.rawY - lastDragRawY)
-                                .roundToInt()
-
-                        if (dx != 0 || dy != 0) {
-                            val maxX =
-                                (screenWidth - hostSide)
-                                    .coerceAtLeast(0)
-                            val maxY =
-                                (screenHeight - hostSide)
-                                    .coerceAtLeast(0)
-
-                            params.x =
-                                (params.x + dx)
-                                    .coerceIn(0, maxX)
-                            params.y =
-                                (params.y + dy)
-                                    .coerceIn(0, maxY)
-
-                            overlayX = params.x
-                            overlayY = params.y
-
-                            runCatching {
-                                wm.updateViewLayout(root, params)
-                            }
-
-                            lastDragRawX = event.rawX
-                            lastDragRawY = event.rawY
-                        }
+                        moveFloatingIconToFinger(
+                            wm,
+                            root,
+                            params,
+                            event.rawX,
+                            event.rawY,
+                            screenWidth,
+                            screenHeight,
+                            hostSide
+                        )
                     }
                     true
                 }
@@ -335,6 +325,40 @@ object WebViewOverlayHost {
 
                 else -> true
             }
+        }
+    }
+
+    private fun moveFloatingIconToFinger(
+        wm: WindowManager,
+        root: FrameLayout,
+        params: WindowManager.LayoutParams,
+        rawX: Float,
+        rawY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+        hostSide: Int
+    ) {
+        val maxX =
+            (screenWidth - hostSide)
+                .coerceAtLeast(0)
+        val maxY =
+            (screenHeight - hostSide)
+                .coerceAtLeast(0)
+
+        params.x =
+            (rawX - hostSide / 2f)
+                .roundToInt()
+                .coerceIn(0, maxX)
+        params.y =
+            (rawY - hostSide / 2f)
+                .roundToInt()
+                .coerceIn(0, maxY)
+
+        overlayX = params.x
+        overlayY = params.y
+
+        runCatching {
+            wm.updateViewLayout(root, params)
         }
     }
 
