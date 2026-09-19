@@ -130,8 +130,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun configureOverlayOpacity() {
         val initial = OverlaySettings.getOpacityPercent(this)
+        val overlayEnabled =
+            OverlaySettings.isCompatibilityOverlayEnabled(this)
+
+        binding.compatibilityOverlaySwitch.isChecked = overlayEnabled
+        binding.overlayOpacitySeek.isEnabled = overlayEnabled
+        binding.overlayOpacityLabel.text =
+            if (overlayEnabled) "Overlay " + initial + "%"
+            else "Overlay 已关闭"
         binding.overlayOpacitySeek.progress = initial - 1
-        binding.overlayOpacityLabel.text = "Overlay " + initial + "%"
+
+        binding.compatibilityOverlaySwitch.setOnCheckedChangeListener { _, checked ->
+            OverlaySettings.setCompatibilityOverlayEnabled(
+                this@MainActivity,
+                checked
+            )
+            binding.overlayOpacitySeek.isEnabled = checked
+            binding.overlayOpacityLabel.text =
+                if (checked) {
+                    "Overlay " +
+                        OverlaySettings.getOpacityPercent(this@MainActivity) +
+                        "%"
+                } else {
+                    "Overlay 已关闭"
+                }
+
+            if (checked) {
+                ensureOverlayCapability()
+            }
+            AppLog.add(
+                "BACKGROUND_MODE",
+                "compatibility_overlay=" + checked
+            )
+        }
 
         binding.overlayOpacitySeek.setOnSeekBarChangeListener(
             object : SeekBar.OnSeekBarChangeListener {
@@ -141,7 +172,14 @@ class MainActivity : AppCompatActivity() {
                     fromUser: Boolean
                 ) {
                     val percent = progress + 1
-                    binding.overlayOpacityLabel.text = "Overlay " + percent + "%"
+                    if (
+                        OverlaySettings.isCompatibilityOverlayEnabled(
+                            this@MainActivity
+                        )
+                    ) {
+                        binding.overlayOpacityLabel.text =
+                            "Overlay " + percent + "%"
+                    }
                     if (!fromUser) return
 
                     OverlaySettings.setOpacityPercent(this@MainActivity, percent)
@@ -165,6 +203,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ensureOverlayCapability() {
+        if (!OverlaySettings.isCompatibilityOverlayEnabled(this)) {
+            startOverlayService()
+            return
+        }
         if (Settings.canDrawOverlays(this)) {
             startOverlayService()
             return
@@ -191,7 +233,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startOverlayService() {
-        if (!Settings.canDrawOverlays(this)) return
         ContextCompat.startForegroundService(
             this,
             Intent(this, OverlayKeepAliveService::class.java)
@@ -208,18 +249,13 @@ class MainActivity : AppCompatActivity() {
             binding.chatWebView.resumeTimers()
             pageAdbBridge.installForCurrentPage()
         }
-        if (Settings.canDrawOverlays(this)) {
-            startOverlayService()
-        }
+        startOverlayService()
     }
 
     override fun onStop() {
-        if (!isFinishing &&
-            ::binding.isInitialized &&
-            Settings.canDrawOverlays(this)
-        ) {
+        if (!isFinishing && ::binding.isInitialized) {
             startOverlayService()
-            WebViewOverlayHost.moveToOverlay(
+            WebViewOverlayHost.moveToBackground(
                 applicationContext,
                 binding.chatWebView
             )

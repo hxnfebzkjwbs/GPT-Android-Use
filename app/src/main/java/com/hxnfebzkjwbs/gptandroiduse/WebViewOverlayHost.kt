@@ -18,56 +18,79 @@ object WebViewOverlayHost {
     private var windowManager: WindowManager? = null
     private var hostedWebView: WebView? = null
     private var overlayAttached = false
+    private var backgroundDetached = false
     private var captureHidden = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    fun moveToOverlay(context: Context, webView: WebView): Boolean {
-        synchronized(lock) {
-            if (!Settings.canDrawOverlays(context)) return false
-            if (overlayAttached && hostedWebView === webView) {
-                webView.resumeTimers()
-                return true
-            }
-
-            (webView.parent as? ViewGroup)?.removeView(webView)
-
-            val wm = context.applicationContext
-                .getSystemService(WindowManager::class.java)
-
-            return runCatching {
-                if (overlayAttached && hostedWebView != null) {
-                    runCatching { windowManager?.removeViewImmediate(hostedWebView) }
-                }
-
-                webView.importantForAccessibility =
-                    WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                wm.addView(webView, createLayoutParams(context))
-
-                windowManager = wm
+    fun moveToBackground(context: Context, webView: WebView): Boolean =
+        runOnMainBlocking(1_000L) {
+            synchronized(lock) {
+                (webView.parent as? ViewGroup)?.removeView(webView)
                 hostedWebView = webView
-                overlayAttached = true
-                captureHidden = false
 
-                webView.visibility = WebView.VISIBLE
-                webView.resumeTimers()
-                webView.post {
-                    webView.requestLayout()
-                    webView.invalidate()
+                val useOverlay =
+                    OverlaySettings.isCompatibilityOverlayEnabled(context) &&
+                        Settings.canDrawOverlays(context)
+
+                if (useOverlay) {
+                    val wm = context.applicationContext
+                        .getSystemService(WindowManager::class.java)
+
+                    return@synchronized runCatching {
+                        if (overlayAttached) {
+                            runCatching {
+                                windowManager?.removeViewImmediate(webView)
+                            }
+                        }
+
+                        webView.importantForAccessibility =
+                            WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                        wm.addView(webView, createLayoutParams(context))
+
+                        windowManager = wm
+                        overlayAttached = true
+                        backgroundDetached = false
+                        captureHidden = false
+
+                        webView.visibility = WebView.VISIBLE
+                        webView.resumeTimers()
+                        webView.onResume()
+                        AppLog.add("BACKGROUND_MODE", "overlay")
+                        true
+                    }.getOrElse {
+                        overlayAttached = false
+                        backgroundDetached = true
+                        AppLog.add(
+                            "BACKGROUND_MODE",
+                            "overlay failed, falling back to detached: " +
+                                (it.message ?: it.javaClass.simpleName)
+                        )
+                        prepareDetached(webView)
+                        true
+                    }
                 }
 
-                AppLog.add("OVERLAY", "attached")
-                true
-            }.getOrElse {
-                overlayAttached = false
+                if (overlayAttached) {
+                    runCatching {
+                        windowManager?.removeViewImmediate(webView)
+                    }
+                    overlayAttached = false
+                }
+
+                backgroundDetached = true
                 captureHidden = false
-                hostedWebView = null
-                AppLog.add(
-                    "OVERLAY",
-                    "attach failed: " + (it.message ?: it.javaClass.simpleName)
-                )
-                false
+                prepareDetached(webView)
+                AppLog.add("BACKGROUND_MODE", "detached")
+                true
             }
         }
+
+    private fun prepareDetached(webView: WebView) {
+        webView.importantForAccessibility =
+            WebView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        webView.visibility = WebView.VISIBLE
+        webView.resumeTimers()
+        webView.onResume()
     }
 
     fun setHiddenForScreenshot(
@@ -83,25 +106,15 @@ object WebViewOverlayHost {
                 webView.layoutParams as? WindowManager.LayoutParams
                     ?: return@synchronized false
 
-            val newAlpha = if (hidden) 0f else OverlaySettings.getOpacity(context)
-            if (params.alpha == newAlpha && captureHidden == hidden) {
-                return@synchronized true
-            }
+            val newAlpha =
+                if (hidden) 0f else OverlaySettings.getOpacity(context)
 
             params.alpha = newAlpha
             runCatching {
                 wm.updateViewLayout(webView, params)
                 captureHidden = hidden
-                AppLog.add(
-                    "OVERLAY",
-                    if (hidden) "hidden for screenshot" else "restored after screenshot"
-                )
                 true
             }.getOrElse {
-                AppLog.add(
-                    "OVERLAY",
-                    "alpha update failed: " + (it.message ?: it.javaClass.simpleName)
-                )
                 false
             }
         }
@@ -115,18 +128,23 @@ object WebViewOverlayHost {
                 webView.resumeTimers()
                 webView.onResume()
                 webView.evaluateJavascript(
-                    "(function(){return String(Date.now())})()"
+                    "window.__gptAndroidUseBackgroundTick && " +
+                        "window.__gptAndroidUseBackgroundTick();"
                 ) { value ->
                     AppLog.add(
                         "JS_KEEPALIVE",
-                        "callback=" + value.take(64)
+                        "callback=" + value.take(96) +
+                            " mode=" +
+                            if (overlayAttached) "overlay" else
+                                if (backgroundDetached) "detached" else "activity"
                     )
                 }
                 true
             }.getOrElse {
                 AppLog.add(
                     "WEBVIEW_KEEPALIVE",
-                    "failed: " + (it.message ?: it.javaClass.simpleName)
+                    "failed: " +
+                        (it.message ?: it.javaClass.simpleName)
                 )
                 false
             }
@@ -149,13 +167,16 @@ object WebViewOverlayHost {
         synchronized(lock) {
             if (overlayAttached && hostedWebView === webView) {
                 runCatching { windowManager?.removeViewImmediate(webView) }
-                overlayAttached = false
-                captureHidden = false
             } else {
                 (webView.parent as? ViewGroup)?.let { parent ->
                     if (parent !== container) parent.removeView(webView)
                 }
             }
+
+            overlayAttached = false
+            backgroundDetached = false
+            captureHidden = false
+            hostedWebView = webView
 
             if (webView.parent !== container) {
                 container.addView(
@@ -167,15 +188,16 @@ object WebViewOverlayHost {
                 )
             }
 
-            hostedWebView = webView
             webView.importantForAccessibility =
                 WebView.IMPORTANT_FOR_ACCESSIBILITY_AUTO
             webView.visibility = WebView.VISIBLE
             webView.resumeTimers()
+            webView.onResume()
             webView.post {
                 webView.requestLayout()
                 webView.invalidate()
             }
+            AppLog.add("BACKGROUND_MODE", "activity")
         }
     }
 
@@ -186,11 +208,14 @@ object WebViewOverlayHost {
             }
             if (hostedWebView === webView) hostedWebView = null
             overlayAttached = false
+            backgroundDetached = false
             captureHidden = false
         }
     }
 
-    private fun createLayoutParams(context: Context): WindowManager.LayoutParams =
+    private fun createLayoutParams(
+        context: Context
+    ): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,

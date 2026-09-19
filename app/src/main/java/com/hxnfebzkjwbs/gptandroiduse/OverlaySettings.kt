@@ -6,6 +6,7 @@ object OverlaySettings {
     private const val PREFS = "overlay_settings"
     private const val KEY_OPACITY_PERCENT = "opacity_percent"
     private const val DEFAULT_OPACITY_PERCENT = 1
+    private const val KEY_COMPATIBILITY_OVERLAY = "compatibility_overlay"
 
     fun getOpacityPercent(context: Context): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -14,6 +15,17 @@ object OverlaySettings {
 
     fun getOpacity(context: Context): Float =
         getOpacityPercent(context) / 100f
+
+    fun isCompatibilityOverlayEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_COMPATIBILITY_OVERLAY, false)
+
+    fun setCompatibilityOverlayEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_COMPATIBILITY_OVERLAY, enabled)
+            .apply()
+    }
 
     fun setOpacityPercent(context: Context, percent: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

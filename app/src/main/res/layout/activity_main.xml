@@ -36,6 +36,15 @@
         android:textIsSelectable="true"
         android:textSize="12sp" />
 
+    <Switch
+        android:id="@+id/compatibilityOverlaySwitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:text="兼容 Overlay 保活（默认关闭）"
+        android:textSize="12sp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

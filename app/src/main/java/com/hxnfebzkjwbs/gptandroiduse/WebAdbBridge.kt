@@ -1360,6 +1360,27 @@ class WebAdbBridge(
             );
           };
 
+          window.__gptAndroidUseBackgroundTick = function() {
+            if (!enabled) return 'disabled';
+
+            try {
+              if (activeTransaction) {
+                advanceTransaction(false);
+              }
+              if (internalQueue.length) {
+                flushInternalQueue();
+              }
+              return (
+                'ok:' +
+                (activeTransaction ? activeTransaction.phase : 'IDLE') +
+                ':queue=' + internalQueue.length
+              );
+            } catch (e) {
+              nativeStatus('BACKGROUND_TICK_ERROR', String(e));
+              return 'error:' + String(e);
+            }
+          };
+
           window.__gptAndroidUseBridgeBootstrap = function() {
             nativeStatus('INLINE_PROTOCOL_READY', 'state-machine bridge ready');
           };
