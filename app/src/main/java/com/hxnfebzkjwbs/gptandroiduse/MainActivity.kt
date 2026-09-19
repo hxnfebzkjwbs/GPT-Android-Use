@@ -81,7 +81,15 @@ class MainActivity : AppCompatActivity() {
             onNativeAssistantMessage = { text ->
                 addNativeMessage("assistant", text)
                 binding.nativeSendButton.isEnabled = true
+                binding.nativeStopButton.isEnabled = false
                 binding.bridgeStatusText.text = "AI：已回复"
+            },
+            onNativeStep = { step ->
+                binding.nativeStopButton.isEnabled = true
+                addNativeMessage(
+                    "step",
+                    "步骤：" + step
+                )
             },
             onNativeSendState = { state, detail ->
                 when (state) {
@@ -91,6 +99,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     "failed" -> {
                         binding.nativeSendButton.isEnabled = true
+                        binding.nativeStopButton.isEnabled = false
                         binding.bridgeStatusText.text =
                             "发送失败：" + detail
                         addNativeMessage(
@@ -133,6 +142,12 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, AdbSetupActivity::class.java))
         }
 
+        binding.accessibilityButton.setOnClickListener {
+            startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            )
+        }
+
         binding.logsButton.setOnClickListener {
             startActivity(Intent(this, LogActivity::class.java))
         }
@@ -168,6 +183,24 @@ class MainActivity : AppCompatActivity() {
         binding.nativeSendButton.setOnClickListener {
             sendNativeChatMessage()
         }
+
+        binding.nativeStopButton.setOnClickListener {
+            binding.nativeStopButton.isEnabled = false
+            binding.nativeSendButton.isEnabled = true
+            binding.bridgeStatusText.text = "正在停止…"
+            pageAdbBridge.stopAutomation { result ->
+                runOnUiThread {
+                    binding.bridgeStatusText.text = "已停止"
+                    addNativeMessage(
+                        "system",
+                        "已停止当前生成与 ADB 自动化。" +
+                            if (result.isBlank()) "" else " (" + result + ")"
+                    )
+                }
+            }
+        }
+
+        binding.nativeStopButton.isEnabled = false
 
         binding.nativeMessageInput.setOnEditorActionListener { _, actionId, event ->
             val send =
@@ -209,6 +242,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.nativeMessageInput.setText("")
         binding.nativeSendButton.isEnabled = false
+        binding.nativeStopButton.isEnabled = true
         addNativeMessage("user", text)
         binding.bridgeStatusText.text = "AI：发送中…"
 
@@ -226,6 +260,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     "not-ready", "composer-missing" -> {
                         binding.nativeSendButton.isEnabled = true
+                        binding.nativeStopButton.isEnabled = false
                         binding.bridgeStatusText.text =
                             "Web 传输层尚未就绪，请稍后重试或打开 Web 调试"
                         addNativeMessage(
@@ -235,6 +270,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     else -> {
                         binding.nativeSendButton.isEnabled = true
+                        binding.nativeStopButton.isEnabled = false
                         binding.bridgeStatusText.text =
                             "发送失败：" + result
                         addNativeMessage(
@@ -254,7 +290,8 @@ class MainActivity : AppCompatActivity() {
             val density = resources.displayMetrics.density
             val bubble = TextView(this).apply {
                 this.text = text
-                textSize = if (role == "system") 12f else 15f
+                textSize =
+                    if (role == "system" || role == "step") 12f else 15f
                 setTextColor(
                     if (role == "user") Color.WHITE
                     else Color.rgb(30, 30, 30)
@@ -271,6 +308,7 @@ class MainActivity : AppCompatActivity() {
                         when (role) {
                             "user" -> Color.rgb(55, 95, 210)
                             "system" -> Color.rgb(235, 235, 235)
+                            "step" -> Color.rgb(230, 240, 255)
                             else -> Color.rgb(245, 245, 245)
                         }
                     )
@@ -347,6 +385,12 @@ class MainActivity : AppCompatActivity() {
             binding.chatWebView.resumeTimers()
             pageAdbBridge.installForCurrentPage()
         }
+        binding.accessibilityButton.text =
+            if (TextInputAccessibilityService.isConnected()) {
+                "无障碍✓"
+            } else {
+                "无障碍"
+            }
         ensureOverlayCapability()
         startOverlayService()
     }

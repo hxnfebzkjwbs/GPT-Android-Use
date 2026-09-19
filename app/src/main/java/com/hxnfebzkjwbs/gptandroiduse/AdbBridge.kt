@@ -1,6 +1,8 @@
 package com.hxnfebzkjwbs.gptandroiduse
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -197,6 +199,12 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                             "Use the attached image itself to choose the next coordinate."
                         )
                     }
+                }
+
+                normalized.startsWith("input text ", ignoreCase = true) &&
+                    containsNonAsciiInputText(command) -> {
+                    requireTargetForeground()
+                    executeUnicodeInputText(command)
                 }
 
                 isTargetInteractionCommand(normalized) -> {
@@ -461,6 +469,82 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
                 invalidateBrokenSession()
                 throw t
             }
+        }
+    }
+
+    private fun containsNonAsciiInputText(command: String): Boolean =
+        extractInputTextPayload(command).any { it.code > 0x7f }
+
+    private fun extractInputTextPayload(command: String): String {
+        val match = Regex(
+            "^input\\s+text\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(command.trim())
+            ?: error("input text requires text after the command")
+
+        var value = match.groupValues[1].trim()
+        if (
+            value.length >= 2 &&
+            (
+                (value.startsWith("\"") && value.endsWith("\"")) ||
+                    (value.startsWith("'") && value.endsWith("'"))
+            )
+        ) {
+            value = value.substring(1, value.length - 1)
+        }
+
+        return value
+            .replace("%s", " ")
+            .replace("\\ ", " ")
+    }
+
+    private fun executeUnicodeInputText(command: String): String {
+        val text = extractInputTextPayload(command)
+        check(text.isNotEmpty()) { "Unicode input text is empty" }
+
+        val accessibility = TextInputAccessibilityService.setTextNow(text)
+        if (accessibility.isSuccess) {
+            val detail = accessibility.getOrNull().orEmpty()
+            AppLog.add(
+                "TEXT_INPUT",
+                "method=accessibility chars=" + text.length +
+                    " detail=" + detail
+            )
+            return buildString {
+                appendLine("TEXT_INPUT")
+                appendLine("method: accessibility ACTION_SET_TEXT")
+                appendLine("chars: " + text.length)
+                append("detail: " + detail)
+            }
+        }
+
+        val accessibilityFailure =
+            accessibility.exceptionOrNull()?.message
+                ?: "accessibility service unavailable"
+
+        val clipboard =
+            context.getSystemService(ClipboardManager::class.java)
+                ?: error("ClipboardManager is unavailable")
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText("GPT Android Use", text)
+        )
+
+        val pasteResult = runShellUnchecked(
+            "input keyevent " + KEYCODE_PASTE
+        )
+
+        AppLog.add(
+            "TEXT_INPUT",
+            "method=clipboard+keyevent chars=" + text.length +
+                " accessibility_failure=" + accessibilityFailure
+        )
+
+        return buildString {
+            appendLine("TEXT_INPUT")
+            appendLine("method: ClipboardManager.setPrimaryClip + ADB KEYCODE_PASTE")
+            appendLine("chars: " + text.length)
+            appendLine("accessibility_failure: " + accessibilityFailure.take(400))
+            append("paste_result: " + pasteResult.take(400))
         }
     }
 
@@ -1040,5 +1124,6 @@ class AndroidAdbBridge(private val context: Context) : AdbBridge {
         private const val MAX_OCR_REGIONS = 120
         private const val SCREENSHOT_OVERLAY_SETTLE_MS = 80L
         private const val SCREENSHOT_JPEG_QUALITY = 52
+        private const val KEYCODE_PASTE = 279
     }
 }

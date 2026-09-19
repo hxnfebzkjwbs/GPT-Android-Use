@@ -89,6 +89,14 @@
                     android:layout_marginStart="6dp"
                     android:text="发送" />
 
+                <Button
+                    android:id="@+id/nativeStopButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:enabled="false"
+                    android:text="停止" />
+
             </LinearLayout>
 
         </LinearLayout>
@@ -148,6 +156,13 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="ADB" />
+
+        <Button
+            android:id="@+id/accessibilityButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="无障碍" />
 
         <Button
             android:id="@+id/logsButton"

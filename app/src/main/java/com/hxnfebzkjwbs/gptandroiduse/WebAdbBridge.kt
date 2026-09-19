@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class WebAdbBridge(
     context: Context,
@@ -23,7 +24,8 @@ class WebAdbBridge(
         complete: (Boolean) -> Unit
     ) -> Unit,
     private val onNativeAssistantMessage: (String) -> Unit = {},
-    private val onNativeSendState: (String, String) -> Unit = { _, _ -> }
+    private val onNativeSendState: (String, String) -> Unit = { _, _ -> },
+    private val onNativeStep: (String) -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val adb = AndroidAdbBridge(appContext)
@@ -32,6 +34,7 @@ class WebAdbBridge(
         .joinToString("") { "%02x".format(it) }
     private val inFlight = Collections.synchronizedSet(mutableSetOf<String>())
     private val completedRequestIds = Collections.synchronizedSet(mutableSetOf<String>())
+    private val stopGeneration = AtomicLong(0L)
 
     @Volatile
     private var enabled = false
@@ -99,6 +102,27 @@ class WebAdbBridge(
                     ?.removePrefix("\"")
                     ?.removeSuffix("\"")
                     ?.replace("\\\"", "\"")
+                    ?: "unknown"
+                onComplete(result)
+            }
+        }
+    }
+
+    fun stopAutomation(
+        onComplete: (String) -> Unit = {}
+    ) {
+        stopGeneration.incrementAndGet()
+        AppLog.add("STOP", "native stop requested")
+
+        webView.post {
+            val js =
+                "window.__gptAndroidUseStopAutomation ? " +
+                    "window.__gptAndroidUseStopAutomation() : 'not-ready';"
+            webView.evaluateJavascript(js) { raw ->
+                val result = raw
+                    ?.trim()
+                    ?.removePrefix("\"")
+                    ?.removeSuffix("\"")
                     ?: "unknown"
                 onComplete(result)
             }
@@ -259,7 +283,11 @@ class WebAdbBridge(
 
                 postStatus("步骤：" + stepDescription)
                 AppLog.add("STEP", stepDescription)
+                webView.post {
+                    onNativeStep(stepDescription)
+                }
 
+                val executionGeneration = stopGeneration.get()
                 val commands = parseCommands(payload)
                 if (commands.isEmpty()) {
                     postResult(requestId, false, "ADB_EXEC block contains no command after STEP")
@@ -314,6 +342,11 @@ class WebAdbBridge(
                     }
                 }
 
+                if (stopGeneration.get() != executionGeneration) {
+                    postStatus("Bridge: stopped before execution")
+                    return@execute
+                }
+
                 val totalStartedAt = SystemClock.elapsedRealtime()
 
                 failurePhase = "adb_prepare"
@@ -327,6 +360,11 @@ class WebAdbBridge(
                 val commandStartedAt = SystemClock.elapsedRealtime()
                 val result = adb.execute(command, userApproved).getOrThrow()
                 val commandMs = SystemClock.elapsedRealtime() - commandStartedAt
+
+                if (stopGeneration.get() != executionGeneration) {
+                    postStatus("Bridge: stopped after current command")
+                    return@execute
+                }
 
                 val observeAfter = shouldObserveAfter(command)
                 var observeMs = 0L
@@ -363,6 +401,11 @@ class WebAdbBridge(
                     append(" total=")
                     append(totalMs)
                 }.take(MAX_RESULT_CHARS)
+
+                if (stopGeneration.get() != executionGeneration) {
+                    postStatus("Bridge: stopped before result delivery")
+                    return@execute
+                }
 
                 postStatus("Bridge: ready")
                 postResult(requestId, true, output)
@@ -1464,6 +1507,44 @@ class WebAdbBridge(
               txId,
               image
             );
+          };
+
+          window.__gptAndroidUseStopAutomation = function() {
+            try {
+              if (transactionTimer) {
+                clearTimeout(transactionTimer);
+                transactionTimer = null;
+              }
+              if (internalSendTimer) {
+                clearTimeout(internalSendTimer);
+                internalSendTimer = null;
+              }
+
+              internalQueue.splice(0, internalQueue.length);
+              oneTapPending = false;
+              nativeSendPending = false;
+
+              if (activeTransaction) {
+                finishTransaction('user-stop');
+              }
+
+              const stopButton = stopButtons().find(button =>
+                isVisible(button) && !button.disabled
+              );
+              if (stopButton) {
+                bypassNextSend = true;
+                stopButton.click();
+              }
+
+              nativeStatus(
+                'USER_STOP',
+                stopButton ? 'generation-and-automation' : 'automation'
+              );
+              return stopButton ? 'stopped-generation' : 'stopped';
+            } catch (e) {
+              nativeStatus('USER_STOP_ERROR', String(e));
+              return 'error:' + String(e);
+            }
           };
 
           window.__gptAndroidUseBackgroundTick = function() {

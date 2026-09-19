@@ -38,6 +38,20 @@
             android:foregroundServiceType="shortService" />
 
         <service
+            android:name=".TextInputAccessibilityService"
+            android:enabled="true"
+            android:exported="false"
+            android:label="GPT Android Use 中文输入"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/text_input_accessibility_service" />
+        </service>
+
+        <service
             android:name=".OverlayKeepAliveService"
             android:enabled="true"
             android:exported="false"
